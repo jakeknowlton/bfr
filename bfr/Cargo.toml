@@ -1,0 +1,16 @@
+[package]
+name = "bfr"
+description = "An optimizing brainfuck engine: parser, IR optimizer, and interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+wasm-bindgen = ["dep:wasm-bindgen"]
+
+[dependencies]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }

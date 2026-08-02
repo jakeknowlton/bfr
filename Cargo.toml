@@ -1,6 +1,13 @@
-[package]
-name = "bfr"
+[workspace]
+resolver = "3"
+members = ["bfr", "bfr-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/jakeknow17/bfr"
 
-[dependencies]
+[profile.release]
+lto = true
+codegen-units = 1

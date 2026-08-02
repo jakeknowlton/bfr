@@ -1,0 +1,15 @@
+[package]
+name = "bfr-cli"
+description = "Command-line driver for the bfr brainfuck compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "bfr"
+path = "src/main.rs"
+
+[dependencies]
+bfr = { path = "../bfr" }
+clap = { version = "4", features = ["derive"] }
