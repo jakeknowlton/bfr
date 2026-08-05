@@ -12,12 +12,12 @@ pub fn lower(ast: &Ast) -> Program {
     // It's unlikely that we encounter a Brainfuck program
     // that overflows Rust's callstack, but if that becomes an
     // issue we can rewrite this to lower iteratively.
-    lower_rec(&mut builder, &ast.body);
+    lower_nodes(&mut builder, &ast.body);
 
     builder.finish()
 }
 
-fn lower_rec(builder: &mut Builder, nodes: &[ast::Node]) {
+fn lower_nodes(builder: &mut Builder, nodes: &[ast::Node]) {
     for node in nodes {
         let span = node.span;
         match &node.kind {
@@ -29,7 +29,7 @@ fn lower_rec(builder: &mut Builder, nodes: &[ast::Node]) {
             ast::NodeKind::Input => builder.push(EffKind::Read { at: 0 }, span),
             ast::NodeKind::Loop(body) => {
                 builder.begin_loop(span);
-                lower_rec(builder, body);
+                lower_nodes(builder, body);
                 builder.end_loop(span);
             }
         }

@@ -51,5 +51,25 @@ pub enum NodeKind {
 
 /// Render an AST back to canonical brainfuck source (comments stripped).
 pub fn print(ast: &Ast) -> String {
-    todo!("ast::print")
+    let mut bf = String::new();
+    print_nodes(&mut bf, &ast.body);
+    bf
+}
+
+fn print_nodes(bf: &mut String, nodes: &[Node]) {
+    for node in nodes {
+        match &node.kind {
+            NodeKind::Right => bf.push('>'),
+            NodeKind::Left => bf.push('<'),
+            NodeKind::Inc => bf.push('+'),
+            NodeKind::Dec => bf.push('-'),
+            NodeKind::Output => bf.push('.'),
+            NodeKind::Input => bf.push(','),
+            NodeKind::Loop(body) => {
+                bf.push('[');
+                print_nodes(bf, body);
+                bf.push(']');
+            }
+        }
+    }
 }
