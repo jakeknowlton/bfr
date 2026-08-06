@@ -78,6 +78,7 @@ pub struct Config {
     pub dialect: Dialect,
     /// The passes to run, in order.
     pub pipeline: Pipeline,
+    /// Fault with [`crate::error::FaultCode::OutOfFuel`] after this many interpreter steps.
     pub fuel: Option<u64>,
 }
 

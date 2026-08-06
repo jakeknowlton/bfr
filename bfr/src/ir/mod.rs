@@ -36,9 +36,23 @@ impl Program {
         Program { body }
     }
 
-    /// Assign sequential ids in traversal order, replacing [`NodeId::UNASSIGNED`].
+    /// Assign every node a sequential id in pre-order traversal order.
+    /// This is deterministic and idempotent, so side tables keyed by [`NodeId`]
+    /// stay valid as long as the tree is unchanged.
     pub fn renumber(&mut self) {
-        todo!("Program::renumber")
+        let mut next = 0u32;
+        let mut stack: Vec<&mut [Node]> = vec![&mut self.body.nodes];
+        while let Some(nodes) = stack.pop() {
+            let Some((node, rest)) = nodes.split_first_mut() else {
+                continue;
+            };
+            node.id = NodeId(next);
+            next += 1;
+            stack.push(rest);
+            if let Some(body) = node.kind.body_mut() {
+                stack.push(&mut body.nodes);
+            }
+        }
     }
 
     /// Total effects plus control nodes.

@@ -24,7 +24,7 @@ pub mod bindings;
 
 pub use config::{CellWidth, Config, Dialect, EofBehavior, OptLevel};
 pub use error::{Error, FaultCode, ParseError, Result, RuntimeError, Span};
-pub use interp::{Session, Step};
+pub use interp::{Position, Session, Step};
 pub use opt::{Pass, Pipeline, Stats};
 pub use tape::Tape;
 

@@ -24,7 +24,7 @@ struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Abort after this many loop iterations.
+    /// Abort after this many interpreter steps.
     #[arg(long)]
     fuel: Option<u64>,
 

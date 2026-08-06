@@ -18,7 +18,7 @@ pub enum Level {
 #[wasm_bindgen]
 #[derive(Debug, Clone, Copy)]
 pub enum StepCode {
-    Ran = 0,
+    Yielded = 0,
     Breakpoint = 1,
     NeedInput = 2,
     Done = 3,

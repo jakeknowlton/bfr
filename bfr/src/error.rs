@@ -66,9 +66,10 @@ pub enum ParseErrorKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeError {
     pub code: FaultCode,
-    /// Cell index at which the fault occurred. Meaningless for
-    /// [`FaultCode::OutOfFuel`].
-    pub position: usize,
+    /// Cell index of the attempted access.
+    /// Negative for [`FaultCode::TapeUnderflow`].
+    /// Meaningless for [`FaultCode::OutOfFuel`].
+    pub position: isize,
 }
 
 /// Runtime fault discriminants.
