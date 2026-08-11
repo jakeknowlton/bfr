@@ -93,7 +93,9 @@ impl Pipeline {
 
     /// Remove every pass with this name, returning how many were removed.
     pub fn disable(&mut self, name: &str) -> usize {
-        todo!("Pipeline::disable")
+        let before = self.passes.len();
+        self.passes.retain(|p| p.name() != name);
+        before - self.passes.len()
     }
 
     pub fn names(&self) -> Vec<&'static str> {
@@ -108,10 +110,38 @@ impl Pipeline {
         self.passes.is_empty()
     }
 
-    /// Repeatedly un every pass in order until a full sweep reports no change or `max_iterations` is reached.
+    /// Repeatedly run every pass in order until a full sweep reports no change or we hit `max_iterations`.
     pub fn run(&self, program: &mut Program, ctx: &Ctx<'_>) -> Stats {
         // TODO: Assert [`Program::validate`] in debug builds
-        todo!("Pipeline::run")
+        let mut stats = Stats {
+            ops_before: program.op_count(),
+            passes: self
+                .passes
+                .iter()
+                .map(|p| PassStat {
+                    name: p.name(),
+                    runs: 0,
+                    changes: 0,
+                })
+                .collect(),
+            ..Stats::default()
+        };
+        while stats.iterations < self.max_iterations {
+            stats.iterations += 1;
+            let mut changed = false;
+            for (pass, stat) in self.passes.iter().zip(&mut stats.passes) {
+                stat.runs += 1;
+                if pass.run(program, ctx) {
+                    stat.changes += 1;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        stats.ops_after = program.op_count();
+        stats
     }
 }
 
@@ -146,4 +176,81 @@ pub struct PassStat {
     pub runs: u32,
     /// How many of runs reported a change.
     pub changes: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::ir::lower;
+    use crate::parser;
+
+    /// Reports a change the first `n` runs, then declines forever.
+    struct Countdown(Cell<u32>);
+
+    impl Countdown {
+        fn new(n: u32) -> Countdown {
+            Countdown(Cell::new(n))
+        }
+    }
+
+    impl Pass for Countdown {
+        fn name(&self) -> &'static str {
+            "Countdown"
+        }
+
+        fn run(&self, _program: &mut Program, _ctx: &Ctx<'_>) -> Changed {
+            let left = self.0.get();
+            self.0.set(left.saturating_sub(1));
+            left > 0
+        }
+    }
+
+    fn program() -> Program {
+        lower::lower(&parser::parse("+++[>++++<-]>.").expect("parses"))
+    }
+
+    #[test]
+    fn runs_to_a_fixed_point() {
+        let mut pipeline = Pipeline::empty();
+        pipeline.push(Box::new(Countdown::new(2)));
+        let stats = pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
+
+        // Two changing sweeps, then the sweep that observes no changes.
+        assert_eq!(stats.iterations, 3);
+        assert_eq!(stats.passes.len(), 1);
+        assert_eq!(stats.passes[0].runs, 3);
+        assert_eq!(stats.passes[0].changes, 2);
+        assert!(stats.reached_fixed_point(&pipeline));
+    }
+
+    #[test]
+    fn max_iterations_bounds_a_spinning_pass() {
+        let mut pipeline = Pipeline::empty();
+        pipeline.max_iterations = 4;
+        pipeline.push(Box::new(Countdown::new(u32::MAX)));
+        let stats = pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
+
+        assert_eq!(stats.iterations, 4);
+        assert!(!stats.reached_fixed_point(&pipeline));
+    }
+
+    #[test]
+    fn stats_record_op_counts() {
+        let mut p = program();
+        let expected = p.op_count();
+        let stats = Pipeline::empty().run(&mut p, &Ctx::new(&Dialect::default()));
+        assert_eq!(stats.ops_before, expected);
+        assert_eq!(stats.ops_after, expected);
+        assert_eq!(stats.iterations, 1);
+    }
+
+    #[test]
+    fn disable_removes_by_name() {
+        let mut pipeline = Pipeline::for_level(OptLevel::O1);
+        assert_eq!(pipeline.disable("DrainLoop"), 1);
+        assert_eq!(pipeline.names(), vec!["Normalize", "DeadCode"]);
+        assert_eq!(pipeline.disable("NoSuchPass"), 0);
+    }
 }

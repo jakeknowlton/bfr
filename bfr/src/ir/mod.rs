@@ -57,7 +57,21 @@ impl Program {
 
     /// Total effects plus control nodes.
     pub fn op_count(&self) -> usize {
-        todo!("Program::op_count")
+        let mut count = 0;
+        let mut stack = vec![self.body.nodes()];
+        while let Some(nodes) = stack.pop() {
+            for node in nodes {
+                match &node.kind {
+                    NodeKind::Run(run) => count += run.effects.len(),
+                    NodeKind::Loop(l) => {
+                        count += 1;
+                        stack.push(l.body.nodes());
+                    }
+                    NodeKind::Scan(_) => count += 1,
+                }
+            }
+        }
+        count
     }
 
     /// Check every IR invariant, returning the first violation.

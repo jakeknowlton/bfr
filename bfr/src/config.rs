@@ -74,11 +74,22 @@ pub enum OptLevel {
     O3,
 }
 
+impl core::fmt::Display for OptLevel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            OptLevel::O0 => "O0",
+            OptLevel::O1 => "O1",
+            OptLevel::O2 => "O2",
+            OptLevel::O3 => "O3",
+        })
+    }
+}
+
 pub struct Config {
     pub dialect: Dialect,
     /// The passes to run, in order.
     pub pipeline: Pipeline,
-    /// Fault with [`crate::error::FaultCode::OutOfFuel`] after this many interpreter steps.
+    /// Fault with [`crate::error::FaultCode::OutOfFuel`] after this many IR steps.
     pub fuel: Option<u64>,
 }
 
