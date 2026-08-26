@@ -1,7 +1,7 @@
 //! Tracks which cells hold known values (seeded by the zeroed tape),
 //! turning arithmetic on known cells into stores and settling loops whose
 //! control value it knows: a known zero deletes the loop; a known nonzero
-//! replaces it with its single iteration's effects, when the body is a
+//! replaces it with its single trip's effects, when the body is a
 //! straight-line run that zeroes its own control cell.
 //!
 //! Examples:

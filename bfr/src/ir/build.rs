@@ -48,8 +48,8 @@ impl Frame {
     }
 }
 
-/// Rebase an effect from cursor-relative to run-entry-relative offsets.
-fn rebase(kind: EffKind, cursor: isize) -> EffKind {
+/// Rebase an effect's offsets by `cursor`.
+pub fn rebase(kind: EffKind, cursor: isize) -> EffKind {
     match kind {
         EffKind::Add { at, delta } => EffKind::Add {
             at: at + cursor,

@@ -94,7 +94,7 @@ impl Code {
 }
 
 /// Flatten the tree and rotate each loop into a head test plus a tail test
-/// so every iteration boundary is exactly one test step.
+/// so every trip boundary is exactly one test step.
 fn flatten(program: &Program) -> Code {
     struct Frame<'a> {
         nodes: &'a [Node],
@@ -900,8 +900,8 @@ mod tests {
         let mut s = session("++[-]");
         let bp = [NodeId(1)];
         assert_eq!(s.run_until(u64::MAX, &bp), Step::Breakpoint); // entry test
-        assert_eq!(s.run_until(u64::MAX, &bp), Step::Breakpoint); // after iteration 1
-        assert_eq!(s.run_until(u64::MAX, &bp), Step::Breakpoint); // after iteration 2
+        assert_eq!(s.run_until(u64::MAX, &bp), Step::Breakpoint); // after trip 1
+        assert_eq!(s.run_until(u64::MAX, &bp), Step::Breakpoint); // after trip 2
         assert_eq!(s.run_until(u64::MAX, &bp), Step::Done);
     }
 

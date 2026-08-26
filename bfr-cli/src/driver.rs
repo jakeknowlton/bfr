@@ -128,12 +128,8 @@ pub fn render_stats(stats: &Stats) -> String {
     use std::fmt::Write as _;
     let mut out = format!(
         "pipeline: {} {}, {} -> {} ops\n",
-        stats.iterations,
-        if stats.iterations == 1 {
-            "sweep"
-        } else {
-            "sweeps"
-        },
+        stats.sweeps,
+        if stats.sweeps == 1 { "sweep" } else { "sweeps" },
         stats.ops_before,
         stats.ops_after
     );
@@ -152,7 +148,7 @@ pub fn warn_unconverged(stats: &Stats, pipeline: &Pipeline) {
     if !stats.reached_fixed_point(pipeline) {
         eprintln!(
             "warning: the pipeline did not reach a fixed point in {} sweeps",
-            stats.iterations
+            stats.sweeps
         );
     }
 }

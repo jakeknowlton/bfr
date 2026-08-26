@@ -41,16 +41,16 @@ pub trait Pass {
 pub struct Pipeline {
     passes: Vec<Box<dyn Pass>>,
     /// Safety valve to avoid optimizations taking too long.
-    pub max_iterations: u32,
+    pub max_sweeps: u32,
 }
 
 impl Pipeline {
-    pub const DEFAULT_MAX_ITERATIONS: u32 = 16;
+    pub const DEFAULT_MAX_SWEEPS: u32 = 16;
 
     pub fn empty() -> Pipeline {
         Pipeline {
             passes: Vec::new(),
-            max_iterations: Self::DEFAULT_MAX_ITERATIONS,
+            max_sweeps: Self::DEFAULT_MAX_SWEEPS,
         }
     }
 
@@ -110,7 +110,7 @@ impl Pipeline {
         self.passes.is_empty()
     }
 
-    /// Repeatedly run every pass in order until a full sweep reports no change or we hit `max_iterations`.
+    /// Repeatedly run every pass in order until a full sweep reports no change or we hit `max_sweeps`.
     pub fn run(&self, program: &mut Program, ctx: &Ctx<'_>) -> Stats {
         // TODO: Assert [`Program::validate`] in debug builds
         let mut stats = Stats {
@@ -126,8 +126,8 @@ impl Pipeline {
                 .collect(),
             ..Stats::default()
         };
-        while stats.iterations < self.max_iterations {
-            stats.iterations += 1;
+        while stats.sweeps < self.max_sweeps {
+            stats.sweeps += 1;
             let mut changed = false;
             for (pass, stat) in self.passes.iter().zip(&mut stats.passes) {
                 stat.runs += 1;
@@ -149,7 +149,7 @@ impl core::fmt::Debug for Pipeline {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Pipeline")
             .field("passes", &self.names())
-            .field("max_iterations", &self.max_iterations)
+            .field("max_sweeps", &self.max_sweeps)
             .finish()
     }
 }
@@ -157,7 +157,7 @@ impl core::fmt::Debug for Pipeline {
 /// What the pipeline did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stats {
-    pub iterations: u32,
+    pub sweeps: u32,
     pub ops_before: usize,
     pub ops_after: usize,
     pub passes: Vec<PassStat>,
@@ -165,7 +165,7 @@ pub struct Stats {
 
 impl Stats {
     pub fn reached_fixed_point(&self, pipeline: &Pipeline) -> bool {
-        self.iterations < pipeline.max_iterations
+        self.sweeps < pipeline.max_sweeps
     }
 }
 
@@ -218,7 +218,7 @@ mod tests {
         let stats = pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
 
         // Two changing sweeps, then the sweep that observes no changes.
-        assert_eq!(stats.iterations, 3);
+        assert_eq!(stats.sweeps, 3);
         assert_eq!(stats.passes.len(), 1);
         assert_eq!(stats.passes[0].runs, 3);
         assert_eq!(stats.passes[0].changes, 2);
@@ -226,13 +226,13 @@ mod tests {
     }
 
     #[test]
-    fn max_iterations_bounds_a_spinning_pass() {
+    fn max_sweeps_bounds_a_spinning_pass() {
         let mut pipeline = Pipeline::empty();
-        pipeline.max_iterations = 4;
+        pipeline.max_sweeps = 4;
         pipeline.push(Box::new(Countdown::new(u32::MAX)));
         let stats = pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
 
-        assert_eq!(stats.iterations, 4);
+        assert_eq!(stats.sweeps, 4);
         assert!(!stats.reached_fixed_point(&pipeline));
     }
 
@@ -243,7 +243,7 @@ mod tests {
         let stats = Pipeline::empty().run(&mut p, &Ctx::new(&Dialect::default()));
         assert_eq!(stats.ops_before, expected);
         assert_eq!(stats.ops_after, expected);
-        assert_eq!(stats.iterations, 1);
+        assert_eq!(stats.sweeps, 1);
     }
 
     #[test]
