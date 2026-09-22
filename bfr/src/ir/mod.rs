@@ -39,6 +39,11 @@ impl Program {
         Program { body }
     }
 
+    /// Visit every block, innermost first.
+    pub fn for_each_block_mut(&mut self, f: &mut impl FnMut(&mut Block, BlockSite)) {
+        self.body.walk_mut(BlockSite::Program, f);
+    }
+
     /// Assign every node a sequential id in pre-order traversal order.
     /// This is deterministic and idempotent, so side tables keyed by [`NodeId`]
     /// stay valid as long as the tree is unchanged.
@@ -89,9 +94,24 @@ pub struct Block {
     nodes: Vec<Node>,
 }
 
+/// Where a block sits in the tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockSite {
+    /// Entered once with a zeroed tape.
+    Program,
+    /// Entered after the loop's test read a nonzero cell.
+    LoopBody,
+}
+
 impl Block {
     pub fn new() -> Block {
         Block { nodes: Vec::new() }
+    }
+
+    pub fn from_nodes(nodes: Vec<Node>) -> Block {
+        let mut block = Block { nodes };
+        block.canonicalize();
+        block
     }
 
     pub fn nodes(&self) -> &[Node] {
@@ -208,13 +228,13 @@ impl Block {
     }
 
     /// Visit every block in this subtree, innermost first, `self` last.
-    pub fn for_each_block_mut(&mut self, f: &mut impl FnMut(&mut Block)) {
+    fn walk_mut(&mut self, site: BlockSite, f: &mut impl FnMut(&mut Block, BlockSite)) {
         for node in &mut self.nodes {
             if let Some(body) = node.kind.body_mut() {
-                body.for_each_block_mut(f);
+                body.walk_mut(BlockSite::LoopBody, f);
             }
         }
-        f(self);
+        f(self, site);
     }
 
     /// Net pointer movement, or `None` when not statically known.
@@ -310,6 +330,22 @@ impl Node {
     /// Net pointer movement, or `None` if not statically known.
     pub fn net_shift(&self) -> Option<isize> {
         todo!("Node::net_shift")
+    }
+
+    /// Whether the cell under the exit pointer is provably zero once this
+    /// node has run.
+    pub fn exits_on_zero(&self) -> bool {
+        match &self.kind {
+            NodeKind::Loop(_) | NodeKind::Scan(_) => true,
+            NodeKind::Run(run) => {
+                let exit = run.shift;
+                run.effects
+                    .iter()
+                    .rev()
+                    .find(|eff| eff.kind.writes() == Some(exit))
+                    .is_some_and(|eff| eff.kind == EffKind::Set { at: exit, value: 0 })
+            }
+        }
     }
 }
 
@@ -831,6 +867,57 @@ mod tests {
         }
     }
 
+    mod exits_on_zero {
+        use super::*;
+
+        #[test]
+        fn loops_and_scans_do() {
+            let l = Node::new(
+                NodeKind::Loop(Loop {
+                    body: Block {
+                        nodes: vec![run_node(vec![add(0, 1)], 0)],
+                    },
+                }),
+                Span::SYNTHETIC,
+            );
+            assert!(l.exits_on_zero());
+            let s = Node::new(NodeKind::Scan(Scan { stride: 1 }), Span::SYNTHETIC);
+            assert!(s.exits_on_zero());
+        }
+
+        #[test]
+        fn a_run_whose_last_write_to_the_cell_is_a_clear_does() {
+            assert!(run_node(vec![set(0, 0)], 0).exits_on_zero());
+            assert!(run_node(vec![set(0, 0), add(1, 1)], 0).exits_on_zero());
+            assert!(run_node(vec![set(0, 0), EffKind::Write { at: 0 }], 0).exits_on_zero());
+        }
+
+        #[test]
+        fn a_later_write_to_the_cell_hides_the_clear() {
+            assert!(!run_node(vec![set(0, 0), add(0, 1)], 0).exits_on_zero());
+            assert!(
+                !run_node(vec![set(0, 0), EffKind::Write { at: 0 }, add(0, 3)], 0).exits_on_zero()
+            );
+            assert!(!run_node(vec![set(0, 0), EffKind::Read { at: 0 }], 0).exits_on_zero());
+        }
+
+        #[test]
+        fn the_exit_cell_is_the_one_under_the_shifted_pointer() {
+            // `>[-]` canonicalizes to `[p+1] = 0; p += 1`.
+            assert!(run_node(vec![set(1, 0)], 1).exits_on_zero());
+            assert!(run_node(vec![set(0, 5), set(-2, 0)], -2).exits_on_zero());
+            assert!(!run_node(vec![set(0, 0)], 1).exits_on_zero());
+            assert!(!run_node(vec![set(1, 0), add(1, 1)], 1).exits_on_zero());
+        }
+
+        #[test]
+        fn other_stores_do_not() {
+            assert!(!run_node(vec![set(0, 1)], 0).exits_on_zero());
+            assert!(!run_node(vec![add(0, -1)], 0).exits_on_zero());
+            assert!(!run_node(vec![], 0).exits_on_zero());
+        }
+    }
+
     #[test]
     fn for_each_block_mut_visits_innermost_first_and_self_last() {
         // Distinct lengths: inner body 1 node, outer body 2, top level 3.
@@ -850,12 +937,19 @@ mod tests {
             }),
             Span::SYNTHETIC,
         );
-        let mut block = Block {
+        let mut program = Program::new(Block {
             nodes: vec![run_node(vec![add(0, 1)], 0), outer, run_node(vec![], 1)],
-        };
+        });
 
         let mut visited = Vec::new();
-        block.for_each_block_mut(&mut |b| visited.push(b.len()));
-        assert_eq!(visited, vec![1, 2, 3]);
+        program.for_each_block_mut(&mut |b, site| visited.push((b.len(), site)));
+        assert_eq!(
+            visited,
+            vec![
+                (1, BlockSite::LoopBody),
+                (2, BlockSite::LoopBody),
+                (3, BlockSite::Program),
+            ]
+        );
     }
 }
