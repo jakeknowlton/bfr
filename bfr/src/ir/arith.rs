@@ -125,8 +125,8 @@ pub fn target_factor(per_trip: CellDelta, trip_factor: Cell, dialect: &Dialect) 
 ///
 /// # Examples
 ///
-/// `[p+1] += [p] * 4` with `[p]` holding `3` adds `12`. On u8 cells,
-/// `[p+1] += [p] * 171` with `[p]` holding `3` adds `513`, which is `1`.
+/// `[+1] += [0] * 4` with `[0]` holding `3` adds `12`. On u8 cells,
+/// `[+1] += [0] * 171` with `[0]` holding `3` adds `513`, which is `1`.
 pub fn scaled_delta(from: Cell, factor: CellDelta, dialect: &Dialect) -> CellDelta {
     let product = i64::from(from) * i64::from(factor);
     CellDelta::try_from(product).unwrap_or_else(|_| reduce_delta(product, dialect))

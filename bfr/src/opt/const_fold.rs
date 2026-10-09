@@ -6,8 +6,8 @@
 //!
 //! Examples
 //!
-//! `[p] += 3` at program start becomes `[p] = 3`.
-//! `[p] = 3; while [p] { [p+1] += [p] * 4; [p] = 0 }` becomes `[p] = 3; [p+1] = 12; [p] = 0`.
+//! `[0] += 3` at program start becomes `[0] = 3`.
+//! `[0] = 3; loop { [+1] += [0] * 4; [0] = 0 }` becomes `[0] = 3; [+1] = 12; [0] = 0`.
 
 use crate::config::Dialect;
 use crate::ir::{Block, BlockSite, Loop, Node, NodeKind, Program, Run};
@@ -124,7 +124,7 @@ mod tests {
     fn an_add_to_a_known_cell_becomes_a_store() {
         let (program, changed) = folded(vec![run_node(vec![add(0, 3), add(5, -1)], 0)]);
         assert!(changed);
-        assert_eq!(print::print(&program), "[p] = 3\n[p+5] = 255\n");
+        assert_eq!(print::print(&program), "[0] = 3\n[+5] = 255\n");
     }
 
     #[test]
@@ -132,7 +132,7 @@ mod tests {
         let (program, _) = folded(vec![run_node(vec![read(0), store(1, 2), add(1, 3)], 0)]);
         assert_eq!(
             print::print(&program),
-            "[p] = read()\n[p+1] = 2\n[p+1] = 5\n"
+            "[0] = read\n[+1] = 2\n[+1] = 5\n"
         );
     }
 
@@ -150,12 +150,12 @@ mod tests {
             run_node(vec![add(0, 1)], 0),
         ]);
         let expected = [
-            "[p+1] = 7\n",
-            "p += 1\n",
-            "while [p] {\n",
-            "  [p+1] = read()\n",
+            "[+1] = 7\n",
+            "shift +1\n",
+            "loop {\n",
+            "  [+1] = read\n",
             "}\n",
-            "[p] = 1\n",
+            "[0] = 1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -174,14 +174,14 @@ mod tests {
         assert!(changed);
         assert_eq!(
             print::print(&program),
-            "[p] = read()\nwhile [p] {\n  [p+1] = 2\n  [p+1] = 5\n}\n"
+            "[0] = read\nloop {\n  [+1] = 2\n  [+1] = 5\n}\n"
         );
     }
 
     #[test]
     fn a_scaled_add_of_known_cells_becomes_a_store() {
         let (program, _) = folded(vec![run_node(vec![store(0, 3), scaled(1, 0, 4)], 0)]);
-        assert_eq!(print::print(&program), "[p] = 3\n[p+1] = 12\n");
+        assert_eq!(print::print(&program), "[0] = 3\n[+1] = 12\n");
     }
 
     #[test]
@@ -192,7 +192,7 @@ mod tests {
         ]);
         assert_eq!(
             print::print(&program),
-            "[p] = read()\nwhile [p] {\n  [p] = 3\n  [p+1] += 12\n}\n"
+            "[0] = read\nloop {\n  [0] = 3\n  [+1] += 12\n}\n"
         );
     }
 
@@ -213,7 +213,7 @@ mod tests {
         ]);
         assert!(changed);
         assert_eq!(program.body.len(), 1);
-        assert_eq!(print::print(&program), "[p] = 3\n[p+1] = 12\n[p] = 0\n");
+        assert_eq!(print::print(&program), "[0] = 3\n[+1] = 12\n[0] = 0\n");
     }
 
     #[test]
@@ -227,7 +227,7 @@ mod tests {
         // addressed from before the shift.
         assert_eq!(
             print::print(&program),
-            "[p] = 3\n[p+1] = 0\nwrite([p])\n[p+1] = 1\np += 1\n"
+            "[0] = 3\n[+1] = 0\nwrite [0]\n[+1] = 1\nshift +1\n"
         );
     }
 
@@ -250,13 +250,13 @@ mod tests {
         ]);
         assert!(changed);
         let expected = [
-            "[p] = 3\n",
-            "while [p] {\n",
-            "  [p+1] += 1\n",
-            "  [p] -= 1\n",
+            "[0] = 3\n",
+            "loop {\n",
+            "  [+1] += 1\n",
+            "  [0] += -1\n",
             "}\n",
-            "[p+1] += 1\n",
-            "[p] = 1\n",
+            "[+1] += 1\n",
+            "[0] = 1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -269,7 +269,7 @@ mod tests {
             loop_node(vec![run_node(vec![write(0)], 0)]),
         ]);
         assert!(changed);
-        assert_eq!(print::print(&program), "[p+1] = 0\n[p] = 1\np += 1\n");
+        assert_eq!(print::print(&program), "[+1] = 0\n[0] = 1\nshift +1\n");
     }
 
     #[test]
@@ -292,14 +292,14 @@ mod tests {
             run_node(vec![add(0, 1), add(-1, 1)], 0),
         ]);
         let expected = [
-            "[p+1] = 4\n",
-            "p += 2\n",
-            "while [p] {\n",
-            "  [p] += 1\n",
-            "  [p-1] += 1\n",
+            "[+1] = 4\n",
+            "shift +2\n",
+            "loop {\n",
+            "  [0] += 1\n",
+            "  [-1] += 1\n",
             "}\n",
-            "[p] = 1\n",
-            "[p-1] = 5\n",
+            "[0] = 1\n",
+            "[-1] = 5\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -321,11 +321,11 @@ mod tests {
             run_node(vec![add(0, 1), add(3, 1)], 0),
         ]);
         let expected = [
-            "[p+3] = 1\n",
-            "[p] = read()\n",
-            "scan p += 1\n",
-            "[p] = 1\n",
-            "[p+3] += 1\n",
+            "[+3] = 1\n",
+            "[0] = read\n",
+            "scan +1\n",
+            "[0] = 1\n",
+            "[+3] += 1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -338,16 +338,16 @@ mod tests {
             run_node(vec![add(0, 1), add(1, 1), add(2, 1)], 0),
         ]);
         let expected = [
-            "[p+1] = 7\n",
-            "[p+2] = 7\n",
-            "[p] = read()\n",
-            "while [p] {\n",
-            "  [p+1] += 1\n",
-            "  [p] -= 1\n",
+            "[+1] = 7\n",
+            "[+2] = 7\n",
+            "[0] = read\n",
+            "loop {\n",
+            "  [+1] += 1\n",
+            "  [0] += -1\n",
             "}\n",
-            "[p] = 1\n",
-            "[p+1] += 1\n",
-            "[p+2] = 8\n",
+            "[0] = 1\n",
+            "[+1] += 1\n",
+            "[+2] = 8\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -360,13 +360,13 @@ mod tests {
             run_node(vec![add(0, 1), add(2, 1)], 0),
         ]);
         let expected = [
-            "[p+2] = 7\n",
-            "[p] = read()\n",
-            "while [p] {\n",
-            "  p += 1\n",
+            "[+2] = 7\n",
+            "[0] = read\n",
+            "loop {\n",
+            "  shift +1\n",
             "}\n",
-            "[p] = 1\n",
-            "[p+2] += 1\n",
+            "[0] = 1\n",
+            "[+2] += 1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -380,20 +380,20 @@ mod tests {
             loop_node(vec![run_node(vec![read(2)], 0)]),
             run_node(vec![add(0, 1), add(-1, 1), add(-2, 1)], 0),
         ]);
-        // `[p-1]` is the 5 stored before the shift, `[p-2]` the cell the
+        // `[-1]` is the 5 stored before the shift, `[-2]` the cell the
         // scan stopped on.
         let expected = [
-            "[p] = 4\n",
-            "[p] = read()\n",
-            "scan p += 1\n",
-            "[p+1] = 5\n",
-            "p += 2\n",
-            "while [p] {\n",
-            "  [p+2] = read()\n",
+            "[0] = 4\n",
+            "[0] = read\n",
+            "scan +1\n",
+            "[+1] = 5\n",
+            "shift +2\n",
+            "loop {\n",
+            "  [+2] = read\n",
             "}\n",
-            "[p] = 1\n",
-            "[p-1] = 6\n",
-            "[p-2] = 1\n",
+            "[0] = 1\n",
+            "[-1] = 6\n",
+            "[-2] = 1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -402,13 +402,13 @@ mod tests {
     fn stores_wrap_at_the_cell_width() {
         let nodes = || vec![run_node(vec![store(0, 255), add(0, 1)], 0)];
         let (program, _) = folded(nodes());
-        assert_eq!(print::print(&program), "[p] = 255\n[p] = 0\n");
+        assert_eq!(print::print(&program), "[0] = 255\n[0] = 0\n");
         let u16 = Dialect {
             cell_width: CellWidth::U16,
             ..Dialect::default()
         };
         let (program, _) = folded_under(nodes(), &u16);
-        assert_eq!(print::print(&program), "[p] = 255\n[p] = 256\n");
+        assert_eq!(print::print(&program), "[0] = 255\n[0] = 256\n");
     }
 
     #[test]
@@ -434,7 +434,7 @@ mod tests {
         let (program, _) = crate::compile_to_ir("+++[>++++<-]>.", &config).expect("parses");
         assert_eq!(
             print::print(&program),
-            "[p] = 0\n[p+1] = 12\nwrite([p+1])\np += 1\n"
+            "[0] = 0\n[+1] = 12\nwrite [+1]\nshift +1\n"
         );
     }
 

@@ -3,8 +3,8 @@
 //!
 //! Examples
 //!
-//! `+++` becomes `[p] += 3`.
-//! `>>>>>` becomes `p += 5`.
+//! `+++` becomes `[0] += 3`.
+//! `>>>>>` becomes `shift +5`.
 
 use crate::ir::Program;
 use crate::opt::{Changed, Ctx, Pass};
@@ -43,13 +43,13 @@ mod tests {
     fn fuses_a_string_of_increments() {
         let (program, changed) = normalized("+++");
         assert!(changed);
-        assert_eq!(print::print(&program), "[p] += 3\n");
+        assert_eq!(print::print(&program), "[0] += 3\n");
     }
 
     #[test]
     fn signs_fold_together() {
         let (program, _) = normalized("++---");
-        assert_eq!(print::print(&program), "[p] -= 1\n");
+        assert_eq!(print::print(&program), "[0] += -1\n");
     }
 
     #[test]
@@ -62,14 +62,14 @@ mod tests {
     #[test]
     fn composes_past_adds_to_other_cells() {
         let (program, _) = normalized("+>+<+");
-        assert_eq!(print::print(&program), "[p] += 2\n[p+1] += 1\n");
+        assert_eq!(print::print(&program), "[0] += 2\n[+1] += 1\n");
     }
 
     #[test]
     fn declines_composition_across_an_observer() {
         let (program, changed) = normalized("+.+");
         assert!(!changed);
-        assert_eq!(print::print(&program), "[p] += 1\nwrite([p])\n[p] += 1\n");
+        assert_eq!(print::print(&program), "[0] += 1\nwrite [0]\n[0] += 1\n");
     }
 
     #[test]
@@ -77,13 +77,13 @@ mod tests {
         let (program, changed) = normalized("+++[>++++<-]>.");
         assert!(changed);
         let expected = [
-            "[p] += 3\n",
-            "while [p] {\n",
-            "  [p+1] += 4\n",
-            "  [p] -= 1\n",
+            "[0] += 3\n",
+            "loop {\n",
+            "  [+1] += 4\n",
+            "  [0] += -1\n",
             "}\n",
-            "write([p+1])\n",
-            "p += 1\n",
+            "write [+1]\n",
+            "shift +1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -94,7 +94,7 @@ mod tests {
         assert!(changed);
         assert_eq!(
             print::print(&program),
-            "[p] += 1\nwhile [p] {\n  [p] += 2\n}\n"
+            "[0] += 1\nloop {\n  [0] += 2\n}\n"
         );
     }
 

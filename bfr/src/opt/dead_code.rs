@@ -5,17 +5,17 @@
 //! start, or right after a node that [`Node::exits_on_zero`].
 //!
 //! A shell's test is redundant when its body is a single loop or scan,
-//! which tests the same cell itself, or a single `[p] = 0`, which does
+//! which tests the same cell itself, or a single `[0] = 0`, which does
 //! nothing when the cell is already zero. The body is lifted out in the
 //! shell's place.
 //!
 //! Examples
 //!
-//! `while [p] { [p] -= 1 }; [p] += 1` at program start becomes `[p] += 1`.
-//! `while [p] { [p] -= 1 }; while [p] { [p+1] += 1 }` becomes `while [p] { [p] -= 1 }` (a loop only exits at zero).
-//! `[p] = 0; while [p] { [p+1] += 1 }` becomes `[p] = 0`.
-//! `while [p] { while [p] { [p] -= 1 } }` becomes `while [p] { [p] -= 1 }`.
-//! `while [p] { [p] = 0 }` becomes `[p] = 0`.
+//! `loop { [0] += -1 }; [0] += 1` at program start becomes `[0] += 1`.
+//! `loop { [0] += -1 }; loop { [+1] += 1 }` becomes `loop { [0] += -1 }` (a loop only exits at zero).
+//! `[0] = 0; loop { [+1] += 1 }` becomes `[0] = 0`.
+//! `loop { loop { [0] += -1 } }` becomes `loop { [0] += -1 }`.
+//! `loop { [0] = 0 }` becomes `[0] = 0`.
 
 use crate::error::Span;
 use crate::ir::{Block, BlockSite, Loop, Node, NodeKind, Program};
@@ -50,7 +50,7 @@ fn unwrap_shell(l: &Loop, span: Span) -> Option<Vec<Node>> {
     let self_guarded = match &inner.kind {
         // Tests the control cell itself, so the shell's test is a repeat
         NodeKind::Loop(_) | NodeKind::Scan(_) => true,
-        // A single `[p] = 0` touches only the control cell. When that
+        // A single `[0] = 0` touches only the control cell. When that
         // cell is already zero the store changes nothing, and the shell's
         // test has already accessed it, so lifting it out is safe.
         NodeKind::Run(run) => run.shift == 0 && run.effects.len() == 1,
@@ -107,7 +107,7 @@ mod tests {
     fn comment_loops_at_program_start_die() {
         let (program, changed) = swept("[foo.bar][baz]+");
         assert!(changed);
-        assert_eq!(print::print(&program), "[p] += 1\n");
+        assert_eq!(print::print(&program), "[0] += 1\n");
     }
 
     #[test]
@@ -116,7 +116,7 @@ mod tests {
         assert!(changed);
         assert_eq!(
             print::print(&program),
-            "[p] += 1\nwhile [p] {\n  [p] -= 1\n}\n"
+            "[0] += 1\nloop {\n  [0] += -1\n}\n"
         );
     }
 
@@ -125,12 +125,12 @@ mod tests {
         let (program, changed) = swept("+[[-]+]");
         assert!(!changed);
         let expected = [
-            "[p] += 1\n",
-            "while [p] {\n",
-            "  while [p] {\n",
-            "    [p] -= 1\n",
+            "[0] += 1\n",
+            "loop {\n",
+            "  loop {\n",
+            "    [0] += -1\n",
             "  }\n",
-            "  [p] += 1\n",
+            "  [0] += 1\n",
             "}\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
@@ -142,7 +142,7 @@ mod tests {
         assert!(changed);
         assert_eq!(
             print::print(&program),
-            "[p] += 1\nwhile [p] {\n  [p] -= 1\n}\n"
+            "[0] += 1\nloop {\n  [0] += -1\n}\n"
         );
     }
 
@@ -152,7 +152,7 @@ mod tests {
         assert!(changed);
         assert_eq!(
             print::print(&program),
-            "[p] += 1\nwhile [p] {\n  p += 1\n}\n"
+            "[0] += 1\nloop {\n  shift +1\n}\n"
         );
     }
 
@@ -165,12 +165,12 @@ mod tests {
         let dialect = Dialect::default();
         assert!(DeadCode.run(&mut program, &Ctx::new(&dialect)));
         assert_eq!(program.body.len(), 1);
-        assert_eq!(print::print(&program), "[p] += 1\n[p] = 0\n");
+        assert_eq!(print::print(&program), "[0] += 1\n[0] = 0\n");
     }
 
     #[test]
     fn a_shell_survives_when_the_body_touches_another_cell() {
-        // Runs at most once, but straight-lining would touch `[p+1]`
+        // Runs at most once, but straight-lining would touch `[+1]`
         // when the original never does.
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
@@ -198,7 +198,7 @@ mod tests {
         ]);
         let dialect = Dialect::default();
         assert!(DeadCode.run(&mut program, &Ctx::new(&dialect)));
-        assert_eq!(print::print(&program), "[p] = 0\n");
+        assert_eq!(print::print(&program), "[0] = 0\n");
     }
 
     #[test]
@@ -213,20 +213,20 @@ mod tests {
 
     #[test]
     fn a_loop_after_a_clear_of_the_landing_cell_dies() {
-        // `>[-]` then a loop: the run is `[p+1] = 0; p += 1`.
+        // `>[-]` then a loop: the run is `[+1] = 0; shift +1`.
         let mut program = program_of(vec![
             run_node(vec![store(1, 0)], 1),
             loop_node(vec![run_node(vec![add(0, -1)], 0)]),
         ]);
         let dialect = Dialect::default();
         assert!(DeadCode.run(&mut program, &Ctx::new(&dialect)));
-        assert_eq!(print::print(&program), "[p+1] = 0\np += 1\n");
+        assert_eq!(print::print(&program), "[+1] = 0\nshift +1\n");
     }
 
     #[test]
     fn a_shell_survives_when_the_body_clears_a_different_cell() {
-        // Runs at most once, but the body touches `[p+1]` and moves the
-        // pointer, which the original does not when `[p]` is 0.
+        // Runs at most once, but the body touches `[+1]` and moves the
+        // pointer, which the original does not when `[0]` is 0.
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
             loop_node(vec![run_node(vec![store(1, 0)], 1)]),
@@ -244,7 +244,7 @@ mod tests {
         ]);
         let dialect = Dialect::default();
         assert!(DeadCode.run(&mut program, &Ctx::new(&dialect)));
-        assert_eq!(print::print(&program), "[p] += 1\nscan p += 1\n");
+        assert_eq!(print::print(&program), "[0] += 1\nscan +1\n");
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
         let dialect = Dialect::default();
         assert!(DeadCode.run(&mut program, &Ctx::new(&dialect)));
         assert_eq!(program.body.len(), 1);
-        assert_eq!(print::print(&program), "[p] = 0\n[p] += 1\n");
+        assert_eq!(print::print(&program), "[0] = 0\n[0] += 1\n");
     }
 
     #[test]

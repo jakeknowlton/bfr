@@ -11,7 +11,7 @@
 //! - A *trip* is one pass through a loop body.
 //! - A *shell* is a loop whose body zeroes the control cell, so it runs at
 //!   most once and acts like an `if`.
-//! - A *clear* is a store of zero, `[p] = 0`.
+//! - A *clear* is a store of zero, `[0] = 0`.
 //! - A block is *canonical* when no two runs are adjacent and no run does
 //!   nothing.
 //! - A function *declines* when it returns `None` because its input does
@@ -549,9 +549,7 @@ impl Loop {
 
         // Sum each cell's deltas exactly. A sum too big for a CellDelta
         // makes the shape `Other`, since there is no dialect here to
-        // reduce it against. That only happens in a pipeline without
-        // Normalize, which would have fused the adds already, and even
-        // then only for a body of billions of commands.
+        // reduce it against.
         let mut by: i64 = 0;
         let mut sums: Vec<(isize, i64)> = Vec::new();
         for eff in &run.effects {
@@ -905,8 +903,8 @@ mod tests {
 
         #[test]
         fn collects_reads_and_writes_across_shifts() {
-            // `[p+1] += [p]; p += 1`, then `while [p] { [p] -= 1 }`, then
-            // `write([p+2]); p -= 1`, all relative to the loop's entry.
+            // `[+1] += [0]; shift +1`, then `loop { [0] += -1 }`, then
+            // `write [+2]; shift -1`, all relative to the loop's entry.
             let l = loop_node(vec![
                 run_node(vec![scaled(1, 0, 1)], 1),
                 loop_node(vec![run_node(vec![add(0, -1)], 0)]),
@@ -955,7 +953,7 @@ mod tests {
 
         #[test]
         fn composes_across_the_merge_seam() {
-            // `[p] += 1; p += 1` then `[p-1] += 2; p -= 1` is `[p] += 3`.
+            // `[0] += 1; shift +1` then `[-1] += 2; shift -1` is `[0] += 3`.
             let mut block = Block {
                 nodes: vec![run_node(vec![add(0, 1)], 1), run_node(vec![add(-1, 2)], -1)],
             };
@@ -978,7 +976,7 @@ mod tests {
 
         #[test]
         fn drops_scaled_adds_that_cancel_to_a_zero_factor() {
-            // `[p] += [p+1] * 1` then `[p] += [p+1] * -1` adds nothing.
+            // `[0] += [+1] * 1` then `[0] += [+1] * -1` adds nothing.
             let mut block = Block {
                 nodes: vec![run_node(vec![scaled(0, 1, 1), scaled(0, 1, -1)], 0)],
             };
@@ -1022,7 +1020,7 @@ mod tests {
 
         #[test]
         fn declines_composition_past_a_write_to_the_scaled_source() {
-            // `[p+1] += [p+2]` ... `[p+2] += 1` ... `[p+1] += [p+2]`:
+            // `[+1] += [+2]` ... `[+2] += 1` ... `[+1] += [+2]`:
             // summing the factors would read the updated source twice.
             let mut block = Block {
                 nodes: vec![run_node(
@@ -1093,7 +1091,7 @@ mod tests {
 
         #[test]
         fn the_exit_cell_is_the_one_under_the_shifted_pointer() {
-            // `>[-]` canonicalizes to `[p+1] = 0; p += 1`.
+            // `>[-]` canonicalizes to `[+1] = 0; shift +1`.
             assert!(run_node(vec![store(1, 0)], 1).exits_on_zero());
             assert!(run_node(vec![store(0, 5), store(-2, 0)], -2).exits_on_zero());
             assert!(!run_node(vec![store(0, 0)], 1).exits_on_zero());

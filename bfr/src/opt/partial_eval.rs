@@ -12,8 +12,8 @@
 //!
 //! Examples
 //!
-//! `[p] += 3; while [p] { [p+1] += 2; [p] -= 1 }; [p] = read()` becomes `[p] = read(); [p+1] = 6`.
-//! `hello.b` becomes `[p] = 72; write([p]); [p] = 101; write([p]); ...`.
+//! `[0] += 3; loop { [+1] += 2; [0] += -1 }; [0] = read` becomes `[0] = read; [+1] = 6`.
+//! `hello.b` becomes `[0] = 72; write [0]; [0] = 101; write [0]; ...`.
 
 use std::collections::HashMap;
 
@@ -80,7 +80,8 @@ struct Eval<'a> {
     stack: Vec<Frame<'a>>,
 }
 
-/// Why evaluation cannot go on.
+/// Why evaluation cannot go on. The node that stopped evaluation is
+/// already in the residual.
 enum Stop {
     /// The next step needs something only the running program has.
     Opaque,
@@ -103,9 +104,6 @@ impl<'a> Eval<'a> {
     }
 
     /// Evaluate `program` and build its residual.
-    ///
-    /// Whatever stops evaluation has already put itself into the residual,
-    /// so [`Eval::finish`] only has to copy what comes after it.
     fn run(mut self, program: &'a Program) -> Program {
         self.stack.push(Frame {
             nodes: program.body.nodes(),
@@ -440,7 +438,7 @@ mod tests {
     fn the_docs_worked_example() {
         let (program, changed) = evaluated("+++[>++<-],");
         assert!(changed);
-        assert_eq!(print::print(&program), "[p] = read()\n[p+1] = 6\n");
+        assert_eq!(print::print(&program), "[0] = read\n[+1] = 6\n");
     }
 
     #[test]
@@ -449,7 +447,7 @@ mod tests {
         assert!(changed);
         assert_eq!(
             print::print(&program),
-            "[p] = 2\nwrite([p])\n[p] = 3\nwrite([p])\n"
+            "[0] = 2\nwrite [0]\n[0] = 3\nwrite [0]\n"
         );
     }
 
@@ -463,10 +461,10 @@ mod tests {
 
     #[test]
     fn a_clean_cell_needs_no_store_before_a_write() {
-        // `[p]` is 0 and the residual's tape starts at 0.
+        // `[0]` is 0 and the residual's tape starts at 0.
         let (program, changed) = evaluated(".");
         assert!(!changed);
-        assert_eq!(print::print(&program), "write([p])\n");
+        assert_eq!(print::print(&program), "write [0]\n");
     }
 
     #[test]
@@ -475,7 +473,7 @@ mod tests {
         assert!(changed);
         assert_eq!(
             print::print(&program),
-            "[p] = read()\nwrite([p])\n[p+1] = 2\n"
+            "[0] = read\nwrite [0]\n[+1] = 2\n"
         );
     }
 
@@ -485,7 +483,7 @@ mod tests {
         let (program, _) = evaluated("+++++,.");
         assert_eq!(
             print::print(&program),
-            "[p] = 5\n[p] = read()\nwrite([p])\n"
+            "[0] = 5\n[0] = read\nwrite [0]\n"
         );
     }
 
@@ -494,7 +492,7 @@ mod tests {
         let (program, _) = evaluated("+++[>,<-]");
         assert_eq!(
             print::print(&program),
-            "[p+1] = read()\n[p+1] = read()\n[p+1] = read()\n"
+            "[+1] = read\n[+1] = read\n[+1] = read\n"
         );
     }
 
@@ -502,7 +500,7 @@ mod tests {
     fn a_loop_with_an_unknown_control_cell_is_kept() {
         let (program, changed) = evaluated(",[-]");
         assert!(!changed);
-        assert_eq!(print::print(&program), "[p] = read()\nwhile [p] {\n  [p] -= 1\n}\n");
+        assert_eq!(print::print(&program), "[0] = read\nloop {\n  [0] += -1\n}\n");
     }
 
     #[test]
@@ -510,15 +508,15 @@ mod tests {
         let (program, _) = evaluated("+++>,[<->-]<.");
         // The 3 is only written once the loop needs it.
         let expected = [
-            "[p+1] = read()\n",
-            "[p] = 3\n",
-            "p += 1\n",
-            "while [p] {\n",
-            "  [p-1] -= 1\n",
-            "  [p] -= 1\n",
+            "[+1] = read\n",
+            "[0] = 3\n",
+            "shift +1\n",
+            "loop {\n",
+            "  [-1] += -1\n",
+            "  [0] += -1\n",
             "}\n",
-            "write([p-1])\n",
-            "p -= 1\n",
+            "write [-1]\n",
+            "shift -1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -527,16 +525,16 @@ mod tests {
     fn a_kept_loop_inside_a_trip_lands_in_the_straight_line() {
         let (program, _) = evaluated("++[>,[-]<-]");
         let expected = [
-            "[p+1] = read()\n",
-            "p += 1\n",
-            "while [p] {\n",
-            "  [p] -= 1\n",
+            "[+1] = read\n",
+            "shift +1\n",
+            "loop {\n",
+            "  [0] += -1\n",
             "}\n",
-            "[p] = read()\n",
-            "while [p] {\n",
-            "  [p] -= 1\n",
+            "[0] = read\n",
+            "loop {\n",
+            "  [0] += -1\n",
             "}\n",
-            "p -= 1\n",
+            "shift -1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -547,12 +545,12 @@ mod tests {
         // far are straight-line and the loop continues from there.
         let (program, _) = evaluated("++[.,]");
         let expected = [
-            "[p] = 2\n",
-            "write([p])\n",
-            "[p] = read()\n",
-            "while [p] {\n",
-            "  write([p])\n",
-            "  [p] = read()\n",
+            "[0] = 2\n",
+            "write [0]\n",
+            "[0] = read\n",
+            "loop {\n",
+            "  write [0]\n",
+            "  [0] = read\n",
             "}\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
@@ -563,7 +561,7 @@ mod tests {
         let program = evaluated_with_scans("+>+>+<<[>]+");
         assert_eq!(
             print::print(&program),
-            "[p] = 1\n[p+1] = 1\n[p+2] = 1\n[p+3] = 1\np += 3\n"
+            "[0] = 1\n[+1] = 1\n[+2] = 1\n[+3] = 1\nshift +3\n"
         );
     }
 
@@ -571,12 +569,12 @@ mod tests {
     fn a_scan_onto_an_unknown_cell_continues_from_there() {
         let program = evaluated_with_scans("+>+>,<<[>]+");
         let expected = [
-            "[p+2] = read()\n",
-            "[p] = 1\n",
-            "[p+1] = 1\n",
-            "p += 2\n",
-            "scan p += 1\n",
-            "[p] += 1\n",
+            "[+2] = read\n",
+            "[0] = 1\n",
+            "[+1] = 1\n",
+            "shift +2\n",
+            "scan +1\n",
+            "[0] += 1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -585,7 +583,7 @@ mod tests {
     fn a_fault_stops_evaluation_at_the_faulting_effect() {
         let (program, changed) = evaluated("+<+");
         assert!(changed);
-        assert_eq!(print::print(&program), "[p] = 1\n[p-1] += 1\np -= 1\n");
+        assert_eq!(print::print(&program), "[0] = 1\n[-1] += 1\nshift -1\n");
         let (_, changed) = evaluated("<+");
         assert!(!changed);
     }
@@ -595,7 +593,7 @@ mod tests {
         let (program, _) = evaluated("+<[-]");
         assert_eq!(
             print::print(&program),
-            "[p] = 1\np -= 1\nwhile [p] {\n  [p] -= 1\n}\n"
+            "[0] = 1\nshift -1\nloop {\n  [0] += -1\n}\n"
         );
     }
 
@@ -610,15 +608,15 @@ mod tests {
         // one more add spend the ten, so the second trip's decrement is
         // where evaluation stops.
         let expected = [
-            "[p] = 4\n",
-            "[p+1] = 2\n",
-            "[p] -= 1\n",
-            "while [p] {\n",
-            "  [p+1] += 1\n",
-            "  [p] -= 1\n",
+            "[0] = 4\n",
+            "[+1] = 2\n",
+            "[0] += -1\n",
+            "loop {\n",
+            "  [+1] += 1\n",
+            "  [0] += -1\n",
             "}\n",
-            "write([p+1])\n",
-            "p += 1\n",
+            "write [+1]\n",
+            "shift +1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -630,7 +628,7 @@ mod tests {
             ..PartialEval::default()
         };
         let (program, _) = evaluated_by("+[]", &pass);
-        assert_eq!(print::print(&program), "[p] = 1\nwhile [p] {\n}\n");
+        assert_eq!(print::print(&program), "[0] = 1\nloop {\n}\n");
     }
 
     #[test]
@@ -641,16 +639,16 @@ mod tests {
         };
         let (program, _) = evaluated_by("+++[.-]", &pass);
         let expected = [
-            "[p] = 3\n",
-            "write([p])\n",
-            "[p] = 2\n",
-            "write([p])\n",
-            "[p] = 1\n",
-            "write([p])\n",
-            "[p] -= 1\n",
-            "while [p] {\n",
-            "  write([p])\n",
-            "  [p] -= 1\n",
+            "[0] = 3\n",
+            "write [0]\n",
+            "[0] = 2\n",
+            "write [0]\n",
+            "[0] = 1\n",
+            "write [0]\n",
+            "[0] += -1\n",
+            "loop {\n",
+            "  write [0]\n",
+            "  [0] += -1\n",
             "}\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
@@ -660,14 +658,14 @@ mod tests {
     fn stores_wrap_at_the_cell_width() {
         let src = "-.";
         let (program, _) = evaluated(src);
-        assert_eq!(print::print(&program), "[p] = 255\nwrite([p])\n");
+        assert_eq!(print::print(&program), "[0] = 255\nwrite [0]\n");
         let u16 = Dialect {
             cell_width: CellWidth::U16,
             ..Dialect::default()
         };
         let mut program = lower::lower(&parser::parse(src).expect("parses"));
         PartialEval::default().run(&mut program, &Ctx::new(&u16));
-        assert_eq!(print::print(&program), "[p] = 65535\nwrite([p])\n");
+        assert_eq!(print::print(&program), "[0] = 65535\nwrite [0]\n");
     }
 
     #[test]
@@ -683,7 +681,7 @@ mod tests {
         // adds share one run so the pointer only moves at the end.
         assert_eq!(
             print::print(&program),
-            "[p-2] = 1\n[p-1] = 1\n[p-3] += 1\np -= 3\n"
+            "[-2] = 1\n[-1] = 1\n[-3] += 1\nshift -3\n"
         );
     }
 

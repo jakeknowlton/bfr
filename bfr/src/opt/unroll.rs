@@ -7,7 +7,7 @@
 //!
 //! Examples
 //!
-//! `[p] = 2; while [p] { write([p+1]); [p] -= 1 }` becomes `[p] = 2; write([p+1]); [p] -= 1; write([p+1]); [p] -= 1`.
+//! `[0] = 2; loop { write [+1]; [0] += -1 }` becomes `[0] = 2; write [+1]; [0] += -1; write [+1]; [0] += -1`.
 
 use crate::config::Dialect;
 use crate::ir::{Block, BlockSite, CellDelta, EffKind, Loop, Node, NodeKind, Program, arith};
@@ -155,12 +155,12 @@ mod tests {
         let (program, changed) = unrolled("++[>.<-]");
         assert!(changed);
         let expected = [
-            "[p] += 1\n",
-            "[p] += 1\n",
-            "write([p+1])\n",
-            "[p] -= 1\n",
-            "write([p+1])\n",
-            "[p] -= 1\n",
+            "[0] += 1\n",
+            "[0] += 1\n",
+            "write [+1]\n",
+            "[0] += -1\n",
+            "write [+1]\n",
+            "[0] += -1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -176,16 +176,16 @@ mod tests {
         let (program, changed) = unrolled("++++[.--]");
         assert!(changed);
         let expected = [
-            "[p] += 1\n",
-            "[p] += 1\n",
-            "[p] += 1\n",
-            "[p] += 1\n",
-            "write([p])\n",
-            "[p] -= 1\n",
-            "[p] -= 1\n",
-            "write([p])\n",
-            "[p] -= 1\n",
-            "[p] -= 1\n",
+            "[0] += 1\n",
+            "[0] += 1\n",
+            "[0] += 1\n",
+            "[0] += 1\n",
+            "write [0]\n",
+            "[0] += -1\n",
+            "[0] += -1\n",
+            "write [0]\n",
+            "[0] += -1\n",
+            "[0] += -1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -269,18 +269,18 @@ mod tests {
         let (program, changed) = unrolled("++[>[-]<-]");
         assert!(changed);
         let expected = [
-            "[p] += 1\n",
-            "[p] += 1\n",
-            "p += 1\n",
-            "while [p] {\n",
-            "  [p] -= 1\n",
+            "[0] += 1\n",
+            "[0] += 1\n",
+            "shift +1\n",
+            "loop {\n",
+            "  [0] += -1\n",
             "}\n",
-            "[p-1] -= 1\n",
-            "while [p] {\n",
-            "  [p] -= 1\n",
+            "[-1] += -1\n",
+            "loop {\n",
+            "  [0] += -1\n",
             "}\n",
-            "[p-1] -= 1\n",
-            "p -= 1\n",
+            "[-1] += -1\n",
+            "shift -1\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
     }
@@ -296,20 +296,20 @@ mod tests {
         let (program, changed) = unrolled(",[>[-]++[.-]<,]");
         assert!(changed);
         let expected = [
-            "[p] = read()\n",
-            "while [p] {\n",
-            "  p += 1\n",
-            "  while [p] {\n",
-            "    [p] -= 1\n",
+            "[0] = read\n",
+            "loop {\n",
+            "  shift +1\n",
+            "  loop {\n",
+            "    [0] += -1\n",
             "  }\n",
-            "  [p] += 1\n",
-            "  [p] += 1\n",
-            "  write([p])\n",
-            "  [p] -= 1\n",
-            "  write([p])\n",
-            "  [p] -= 1\n",
-            "  [p-1] = read()\n",
-            "  p -= 1\n",
+            "  [0] += 1\n",
+            "  [0] += 1\n",
+            "  write [0]\n",
+            "  [0] += -1\n",
+            "  write [0]\n",
+            "  [0] += -1\n",
+            "  [-1] = read\n",
+            "  shift -1\n",
             "}\n",
         ];
         assert_eq!(print::print(&program), expected.concat());

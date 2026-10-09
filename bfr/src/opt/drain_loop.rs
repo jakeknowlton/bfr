@@ -5,8 +5,8 @@
 //!
 //! Examples
 //!
-//! `[-]` becomes `[p] = 0`.
-//! `[->+<]` becomes `[p+1] += [p]; [p] = 0`.
+//! `[-]` becomes `[0] = 0`.
+//! `[->+<]` becomes `[+1] += [0]; [0] = 0`.
 
 use crate::ir::{Block, Eff, EffKind, Loop, LoopShape, Node, NodeKind, Program, Run, arith};
 use crate::opt::{Changed, Ctx, Pass};
@@ -50,8 +50,7 @@ impl Pass for DrainLoop {
                 } else {
                     // Keep a shell around the run. In the original, a zero
                     // control cell never touched the targets, so they may be
-                    // off the tape. ConstFold lifts the run out once the
-                    // control cell is known.
+                    // off the tape.
                     let body = Block::from_nodes(vec![run]);
                     Node::new(NodeKind::Loop(Loop { body }), span)
                 }])
@@ -80,7 +79,7 @@ mod tests {
     fn a_clear_loop_becomes_a_bare_store() {
         let (program, changed) = drained("[-]");
         assert!(changed);
-        assert_eq!(print::print(&program), "[p] = 0\n");
+        assert_eq!(print::print(&program), "[0] = 0\n");
     }
 
     #[test]
@@ -91,7 +90,7 @@ mod tests {
         assert_eq!(program.body.len(), 1);
         assert_eq!(
             print::print(&program),
-            "[p] += 1\n[p] += 1\n[p] += 1\n[p] = 0\n"
+            "[0] += 1\n[0] += 1\n[0] += 1\n[0] = 0\n"
         );
     }
 
@@ -99,7 +98,7 @@ mod tests {
     fn a_transfer_keeps_its_shell() {
         let (program, changed) = drained("[->+<]");
         assert!(changed);
-        let expected = ["while [p] {\n", "  [p+1] += [p]\n", "  [p] = 0\n", "}\n"];
+        let expected = ["loop {\n", "  [+1] += [0]\n", "  [0] = 0\n", "}\n"];
         assert_eq!(print::print(&program), expected.concat());
     }
 
@@ -107,10 +106,10 @@ mod tests {
     fn a_fan_out_gets_one_scaled_add_per_target() {
         let (program, _) = drained("[->+>+<<]");
         let expected = [
-            "while [p] {\n",
-            "  [p+1] += [p]\n",
-            "  [p+2] += [p]\n",
-            "  [p] = 0\n",
+            "loop {\n",
+            "  [+1] += [0]\n",
+            "  [+2] += [0]\n",
+            "  [0] = 0\n",
             "}\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
@@ -120,9 +119,9 @@ mod tests {
     fn per_trip_deltas_become_factors() {
         let (program, _) = drained("[->>+++<<]");
         let expected = [
-            "while [p] {\n",
-            "  [p+2] += [p] * 3\n",
-            "  [p] = 0\n",
+            "loop {\n",
+            "  [+2] += [0] * 3\n",
+            "  [0] = 0\n",
             "}\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
@@ -132,9 +131,9 @@ mod tests {
     fn an_odd_step_drains_through_the_modular_inverse() {
         let (program, _) = drained("[--->+<]");
         let expected = [
-            "while [p] {\n",
-            "  [p+1] += [p] * 171\n",
-            "  [p] = 0\n",
+            "loop {\n",
+            "  [+1] += [0] * 171\n",
+            "  [0] = 0\n",
             "}\n",
         ];
         assert_eq!(print::print(&program), expected.concat());
@@ -146,7 +145,7 @@ mod tests {
         assert!(!changed);
         assert_eq!(
             print::print(&program),
-            "while [p] {\n  [p] -= 1\n  [p] -= 1\n}\n"
+            "loop {\n  [0] += -1\n  [0] += -1\n}\n"
         );
     }
 
@@ -164,7 +163,7 @@ mod tests {
     fn nested_drains_rewrite_innermost_first() {
         let (program, changed) = drained("[[-]]");
         assert!(changed);
-        assert_eq!(print::print(&program), "while [p] {\n  [p] = 0\n}\n");
+        assert_eq!(print::print(&program), "loop {\n  [0] = 0\n}\n");
     }
 
     #[test]

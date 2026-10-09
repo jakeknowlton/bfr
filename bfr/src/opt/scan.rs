@@ -2,8 +2,8 @@
 //!
 //! Examples
 //!
-//! `[>]` becomes `scan p += 1`.
-//! `[>>>]` becomes `scan p += 3`.
+//! `[>]` becomes `scan +1`.
+//! `[>>>]` becomes `scan +3`.
 
 use crate::ir::{LoopShape, Node, NodeKind, Program, Scan};
 use crate::opt::{Changed, Ctx, Pass};
@@ -49,17 +49,17 @@ mod tests {
     fn a_move_only_loop_becomes_a_scan() {
         let (program, changed) = scanned("[>]");
         assert!(changed);
-        assert_eq!(print::print(&program), "scan p += 1\n");
+        assert_eq!(print::print(&program), "scan +1\n");
     }
 
     #[test]
     fn the_stride_is_the_net_movement() {
         let (program, _) = scanned("[>>>]");
-        assert_eq!(print::print(&program), "scan p += 3\n");
+        assert_eq!(print::print(&program), "scan +3\n");
         let (program, _) = scanned("[<<]");
-        assert_eq!(print::print(&program), "scan p -= 2\n");
+        assert_eq!(print::print(&program), "scan -2\n");
         let (program, _) = scanned("[>><]");
-        assert_eq!(print::print(&program), "scan p += 1\n");
+        assert_eq!(print::print(&program), "scan +1\n");
     }
 
     #[test]
@@ -82,7 +82,7 @@ mod tests {
     fn nested_scans_rewrite_innermost_first() {
         let (program, changed) = scanned("[[>]]");
         assert!(changed);
-        assert_eq!(print::print(&program), "while [p] {\n  scan p += 1\n}\n");
+        assert_eq!(print::print(&program), "loop {\n  scan +1\n}\n");
     }
 
     #[test]
@@ -96,7 +96,7 @@ mod tests {
     fn the_scan_separates_its_neighbors() {
         let (program, _) = scanned("+[>]+");
         assert_eq!(program.body.len(), 3);
-        assert_eq!(print::print(&program), "[p] += 1\nscan p += 1\n[p] += 1\n");
+        assert_eq!(print::print(&program), "[0] += 1\nscan +1\n[0] += 1\n");
     }
 
     #[test]
