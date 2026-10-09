@@ -17,10 +17,12 @@
 //! - A function *declines* when it returns `None` because its input does
 //!   not fit the pattern it handles.
 
-pub mod arith;
+pub(crate) mod arith;
 pub mod build;
 pub mod lower;
 pub mod print;
+#[cfg(test)]
+pub mod test_support;
 
 use std::collections::{HashMap, HashSet};
 
@@ -79,26 +81,18 @@ impl Program {
 
     /// Every effect in the program, plus one for each loop and scan.
     pub fn op_count(&self) -> usize {
-        let mut count = 0;
-        let mut stack = vec![self.body.nodes()];
-        while let Some(nodes) = stack.pop() {
-            for node in nodes {
-                match &node.kind {
-                    NodeKind::Run(run) => count += run.effects.len(),
-                    NodeKind::Loop(l) => {
-                        count += 1;
-                        stack.push(l.body.nodes());
-                    }
-                    NodeKind::Scan(_) => count += 1,
-                }
-            }
-        }
-        count
+        self.body.op_count()
     }
 
     /// Check every IR invariant, returning the first violation.
+    ///
+    /// The invariants are that every block is canonical, every scan has a
+    /// nonzero stride, and every store holds a value that fits the cell
+    /// width. The message names the offending node by its index path, so
+    /// `node 2.0` is the first node inside the third top-level node.
     pub fn validate(&self, dialect: &Dialect) -> Result<(), String> {
-        todo!("Program::validate")
+        let mut path = Vec::new();
+        self.body.validate(dialect, &mut path)
     }
 }
 
@@ -239,6 +233,73 @@ impl Block {
 
         // Folding may have emptied a run, so canonicalize again
         changed | self.canonicalize()
+    }
+
+    /// Every effect in this block and its nested blocks, plus one for each
+    /// loop and scan.
+    pub fn op_count(&self) -> usize {
+        let mut count = 0;
+        let mut stack = vec![self.nodes()];
+        while let Some(nodes) = stack.pop() {
+            for node in nodes {
+                match &node.kind {
+                    NodeKind::Run(run) => count += run.effects.len(),
+                    NodeKind::Loop(l) => {
+                        count += 1;
+                        stack.push(l.body.nodes());
+                    }
+                    NodeKind::Scan(_) => count += 1,
+                }
+            }
+        }
+        count
+    }
+
+    /// Check the invariants of this block and every block nested in it.
+    /// `path` is the index path to this block, used in the message.
+    fn validate(&self, dialect: &Dialect, path: &mut Vec<usize>) -> Result<(), String> {
+        fn describe(path: &[usize]) -> String {
+            let indexes: Vec<String> = path.iter().map(usize::to_string).collect();
+            format!("node {}", indexes.join("."))
+        }
+
+        let mut after_run = false;
+        for (i, node) in self.nodes.iter().enumerate() {
+            path.push(i);
+            match &node.kind {
+                NodeKind::Run(run) => {
+                    if after_run {
+                        return Err(format!("{} is a run next to a run", describe(path)));
+                    }
+                    if run.is_nop() {
+                        return Err(format!("{} is a run that does nothing", describe(path)));
+                    }
+                    for eff in &run.effects {
+                        if let EffKind::Store { value, .. } = eff.kind
+                            && value & dialect.cell_width.mask() != value
+                        {
+                            return Err(format!(
+                                "{} stores {value}, which does not fit the cell width",
+                                describe(path)
+                            ));
+                        }
+                    }
+                    after_run = true;
+                }
+                NodeKind::Loop(l) => {
+                    l.body.validate(dialect, path)?;
+                    after_run = false;
+                }
+                NodeKind::Scan(scan) => {
+                    if scan.stride == 0 {
+                        return Err(format!("{} is a scan with a stride of 0", describe(path)));
+                    }
+                    after_run = false;
+                }
+            }
+            path.pop();
+        }
+        Ok(())
     }
 
     /// Visit every block in this subtree, innermost first, `self` last.
@@ -696,40 +757,10 @@ impl EffKind {
 mod tests {
     use super::*;
     use crate::config::CellWidth;
+    use crate::ir::test_support::*;
 
     fn u8_dialect() -> Dialect {
         Dialect::default()
-    }
-
-    fn add(at: isize, delta: CellDelta) -> EffKind {
-        EffKind::Add { at, delta }
-    }
-
-    fn store(at: isize, value: Cell) -> EffKind {
-        EffKind::Store { at, value }
-    }
-
-    fn scaled(at: isize, from: isize, factor: CellDelta) -> EffKind {
-        EffKind::AddScaled { at, from, factor }
-    }
-
-    fn run_node(effects: Vec<EffKind>, shift: isize) -> Node {
-        let effects = effects
-            .into_iter()
-            .map(|kind| Eff::new(kind, Span::SYNTHETIC))
-            .collect();
-        Node::new(NodeKind::Run(Run { effects, shift }), Span::SYNTHETIC)
-    }
-
-    fn effect_kinds(block: &Block) -> Vec<&EffKind> {
-        block
-            .nodes()
-            .iter()
-            .flat_map(|node| match &node.kind {
-                NodeKind::Run(run) => run.effects.iter().map(|e| &e.kind).collect(),
-                _ => Vec::new(),
-            })
-            .collect()
     }
 
     mod compose {
@@ -822,15 +853,6 @@ mod tests {
             assert_eq!(a.effects[1].span, Span::new(3, 4));
             assert_eq!(a.shift, 1);
         }
-    }
-
-    fn loop_node(body: Vec<Node>) -> Node {
-        let body = Block::from_nodes(body);
-        Node::new(NodeKind::Loop(Loop { body }), Span::SYNTHETIC)
-    }
-
-    fn scan_node(stride: isize) -> Node {
-        Node::new(NodeKind::Scan(Scan { stride }), Span::SYNTHETIC)
     }
 
     mod net_shift {
@@ -1083,6 +1105,88 @@ mod tests {
             assert!(!run_node(vec![store(0, 1)], 0).exits_on_zero());
             assert!(!run_node(vec![add(0, -1)], 0).exits_on_zero());
             assert!(!run_node(vec![], 0).exits_on_zero());
+        }
+    }
+
+    mod validate {
+        use super::*;
+
+        fn program(nodes: Vec<Node>) -> Program {
+            Program::new(Block { nodes })
+        }
+
+        #[test]
+        fn a_canonical_program_passes() {
+            let p = program(vec![
+                run_node(vec![add(0, 1)], 0),
+                loop_node(vec![run_node(vec![add(0, -1)], 0), scan_node(1)]),
+                run_node(vec![store(0, 255)], 1),
+            ]);
+            assert_eq!(p.validate(&u8_dialect()), Ok(()));
+        }
+
+        #[test]
+        fn an_empty_program_passes() {
+            assert_eq!(program(vec![]).validate(&u8_dialect()), Ok(()));
+        }
+
+        #[test]
+        fn adjacent_runs_fail() {
+            let p = program(vec![run_node(vec![add(0, 1)], 0), run_node(vec![], 1)]);
+            assert_eq!(
+                p.validate(&u8_dialect()),
+                Err("node 1 is a run next to a run".to_string())
+            );
+        }
+
+        #[test]
+        fn a_run_that_does_nothing_fails() {
+            let p = program(vec![run_node(vec![], 0)]);
+            assert_eq!(
+                p.validate(&u8_dialect()),
+                Err("node 0 is a run that does nothing".to_string())
+            );
+        }
+
+        #[test]
+        fn a_zero_stride_scan_fails() {
+            let p = program(vec![loop_node(vec![scan_node(0)])]);
+            assert_eq!(
+                p.validate(&u8_dialect()),
+                Err("node 0.0 is a scan with a stride of 0".to_string())
+            );
+        }
+
+        #[test]
+        fn an_oversized_store_fails_only_at_a_narrow_width() {
+            let p = program(vec![run_node(vec![store(0, 256)], 0)]);
+            assert_eq!(
+                p.validate(&u8_dialect()),
+                Err("node 0 stores 256, which does not fit the cell width".to_string())
+            );
+            let u16 = Dialect {
+                cell_width: CellWidth::U16,
+                ..Dialect::default()
+            };
+            assert_eq!(p.validate(&u16), Ok(()));
+        }
+
+        #[test]
+        fn the_path_reaches_into_nested_bodies() {
+            // Built by hand, since `Block::from_nodes` would merge the runs.
+            let inner = Node::new(
+                NodeKind::Loop(Loop {
+                    body: Block {
+                        nodes: vec![run_node(vec![add(0, 1)], 0), run_node(vec![add(0, 1)], 0)],
+                    },
+                }),
+                Span::SYNTHETIC,
+            );
+            let p = program(vec![run_node(vec![add(0, 1)], 0), loop_node(vec![inner])]);
+            assert_eq!(
+                p.validate(&u8_dialect()),
+                Err("node 1.0.1 is a run next to a run".to_string())
+            );
         }
     }
 

@@ -41,21 +41,7 @@ mod tests {
     use super::*;
     use crate::Span;
     use crate::ir;
-    use crate::ir::{Loop, Run};
-
-    fn expect_run(node: &ir::Node) -> &Run {
-        match &node.kind {
-            ir::NodeKind::Run(run) => run,
-            other => panic!("expected a run, got {other:?}"),
-        }
-    }
-
-    fn expect_loop(node: &ir::Node) -> &Loop {
-        match &node.kind {
-            crate::ir::NodeKind::Loop(l) => l,
-            other => panic!("expected a loop, got {other:?}"),
-        }
-    }
+    use crate::ir::test_support::{expect_loop, expect_run};
 
     #[test]
     fn inc_lowers_correctly() {

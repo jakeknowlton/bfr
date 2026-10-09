@@ -9,10 +9,9 @@
 //! `[p] += 3` at program start becomes `[p] = 3`.
 //! `[p] = 3; while [p] { [p+1] += [p] * 4; [p] = 0 }` becomes `[p] = 3; [p+1] = 12; [p] = 0`.
 
-use std::collections::HashMap;
-
 use crate::config::Dialect;
-use crate::ir::{Block, BlockSite, Cell, EffKind, Loop, Node, NodeKind, Program, Run, arith};
+use crate::ir::{Block, BlockSite, Loop, Node, NodeKind, Program, Run};
+use crate::opt::state::{Known, State};
 use crate::opt::{Changed, Ctx, Pass};
 
 pub struct ConstFold;
@@ -31,120 +30,6 @@ impl Pass for ConstFold {
     }
 }
 
-/// What is known about one cell's value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Known {
-    Value(Cell),
-    Unknown,
-}
-
-/// What the tape holds at one point in a block. `cells` is keyed by offset
-/// from the pointer at block entry, and `origin` is the pointer's current
-/// offset from there, so a shift is one addition. A cell gets an entry once
-/// something has accessed it. Every other cell holds `rest`.
-struct State {
-    cells: HashMap<isize, Known>,
-    rest: Known,
-    origin: isize,
-}
-
-impl State {
-    fn on_entry(site: BlockSite) -> State {
-        let rest = match site {
-            BlockSite::Program => Known::Value(0),
-            BlockSite::LoopBody => Known::Unknown,
-        };
-        // Whatever entered the block read the cell under the pointer.
-        State {
-            cells: HashMap::from([(0, rest)]),
-            rest,
-            origin: 0,
-        }
-    }
-
-    fn get(&self, at: isize) -> Known {
-        self.cells
-            .get(&(self.origin + at))
-            .copied()
-            .unwrap_or(self.rest)
-    }
-
-    fn set(&mut self, at: isize, value: Known) {
-        self.cells.insert(self.origin + at, value);
-    }
-
-    /// Record an access that leaves the cell as it was.
-    fn touch(&mut self, at: isize) {
-        let value = self.get(at);
-        self.cells.entry(self.origin + at).or_insert(value);
-    }
-
-    /// Whether an access has proven the cell is on the tape.
-    fn accessed(&self, at: isize) -> bool {
-        self.cells.contains_key(&(self.origin + at))
-    }
-
-    fn forget_all(&mut self) {
-        self.cells.clear();
-        self.rest = Known::Unknown;
-    }
-
-    /// Move the pointer.
-    fn shift(&mut self, by: isize) {
-        self.origin += by;
-    }
-
-    /// Apply one effect to the state. When its inputs are known, return
-    /// the store or plain add it amounts to.
-    fn step(&mut self, kind: &EffKind, dialect: &Dialect) -> Option<EffKind> {
-        match *kind {
-            EffKind::Add { at, delta } => match self.get(at) {
-                Known::Value(v) => {
-                    let value = arith::apply_delta(v, delta, dialect);
-                    self.set(at, Known::Value(value));
-                    Some(EffKind::Store { at, value })
-                }
-                Known::Unknown => {
-                    self.set(at, Known::Unknown);
-                    None
-                }
-            },
-            EffKind::Store { at, value } => {
-                self.set(at, Known::Value(value));
-                None
-            }
-            EffKind::AddScaled { at, from, factor } => {
-                self.touch(from);
-                match (self.get(at), self.get(from)) {
-                    (Known::Value(a), Known::Value(f)) => {
-                        let delta = arith::scaled_delta(f, factor, dialect);
-                        let value = arith::apply_delta(a, delta, dialect);
-                        self.set(at, Known::Value(value));
-                        Some(EffKind::Store { at, value })
-                    }
-                    (Known::Unknown, Known::Value(f)) => {
-                        self.set(at, Known::Unknown);
-                        let delta = arith::scaled_delta(f, factor, dialect);
-                        Some(EffKind::Add { at, delta })
-                    }
-                    (_, Known::Unknown) => {
-                        self.set(at, Known::Unknown);
-                        None
-                    }
-                }
-            }
-            EffKind::Read { at } => {
-                self.set(at, Known::Unknown);
-                None
-            }
-            EffKind::Write { at } => {
-                self.touch(at);
-                None
-            }
-        }
-    }
-}
-
 /// Fold one block from its entry state.
 fn fold(block: &mut Block, site: BlockSite, dialect: &Dialect) -> bool {
     let mut state = State::on_entry(site);
@@ -157,17 +42,12 @@ fn fold(block: &mut Block, site: BlockSite, dialect: &Dialect) -> bool {
         match &mut node.kind {
             NodeKind::Run(run) => changed |= fold_run(run, &mut state, dialect),
             NodeKind::Scan(_) => {
-                if state.get(0) == Known::Value(0) {
-                    // The test can only go once an access has proven the
-                    // cell is on the tape, since the test itself could fault.
-                    if state.accessed(0) {
-                        edits.push((i, None));
-                    }
-                    state.touch(0);
-                    continue;
+                // The test can only go once an access has proven the cell
+                // is on the tape, since the test itself could fault.
+                if state.get(0) == Known::Value(0) && state.accessed(0) {
+                    edits.push((i, None));
                 }
-                state.forget_all();
-                state.set(0, Known::Value(0));
+                state.pass_scan();
             }
             NodeKind::Loop(l) => {
                 match state.get(0) {
@@ -175,8 +55,6 @@ fn fold(block: &mut Block, site: BlockSite, dialect: &Dialect) -> bool {
                         if state.accessed(0) {
                             edits.push((i, None));
                         }
-                        state.touch(0);
-                        continue;
                     }
                     Known::Value(_) => {
                         if let Some(body) = single_trip(l) {
@@ -191,17 +69,7 @@ fn fold(block: &mut Block, site: BlockSite, dialect: &Dialect) -> bool {
                     }
                     Known::Unknown => {}
                 }
-                // The loop stays. Afterwards every cell it can write is
-                // unknown and its control cell is zero.
-                match l.footprint() {
-                    Some(footprint) => {
-                        for at in footprint.writes {
-                            state.set(at, Known::Unknown);
-                        }
-                    }
-                    None => state.forget_all(),
-                }
-                state.set(0, Known::Value(0));
+                state.pass_loop(l);
             }
         }
     }
@@ -238,48 +106,9 @@ mod tests {
     use super::*;
     use crate::config::{CellWidth, Config, Dialect, OptLevel};
     use crate::error::Span;
-    use crate::ir::{Eff, EffKind, Loop, Node, NodeKind, Run, Scan, print};
-
-    fn program_of(nodes: Vec<Node>) -> Program {
-        Program::new(Block::from_nodes(nodes))
-    }
-
-    fn loop_node(body_nodes: Vec<Node>) -> Node {
-        let body = Block::from_nodes(body_nodes);
-        Node::new(NodeKind::Loop(Loop { body }), Span::SYNTHETIC)
-    }
-
-    fn scan_node(stride: isize) -> Node {
-        Node::new(NodeKind::Scan(Scan { stride }), Span::SYNTHETIC)
-    }
-
-    fn run_node(effects: Vec<EffKind>, shift: isize) -> Node {
-        let effects = effects
-            .into_iter()
-            .map(|kind| Eff::new(kind, Span::SYNTHETIC))
-            .collect();
-        Node::new(NodeKind::Run(Run { effects, shift }), Span::SYNTHETIC)
-    }
-
-    fn add(at: isize, delta: i32) -> EffKind {
-        EffKind::Add { at, delta }
-    }
-
-    fn store(at: isize, value: u32) -> EffKind {
-        EffKind::Store { at, value }
-    }
-
-    fn scaled(at: isize, from: isize, factor: i32) -> EffKind {
-        EffKind::AddScaled { at, from, factor }
-    }
-
-    fn read(at: isize) -> EffKind {
-        EffKind::Read { at }
-    }
-
-    fn write(at: isize) -> EffKind {
-        EffKind::Write { at }
-    }
+    use crate::ir::test_support::*;
+    use crate::ir::{Node, print};
+    use crate::opt::test_support::*;
 
     fn folded_under(nodes: Vec<Node>, dialect: &Dialect) -> (Program, Changed) {
         let mut program = program_of(nodes);
@@ -621,38 +450,25 @@ mod tests {
             "++++++[--->+<]>.",
             ">>++<<[>>+<<-]>>.",
         ] {
-            for cell_width in [CellWidth::U8, CellWidth::U16, CellWidth::U32] {
-                let dialect = Dialect {
-                    cell_width,
-                    ..Dialect::default()
-                };
-                let o0 = Config::new(OptLevel::O0).with_dialect(dialect);
-                let o2 = Config::new(OptLevel::O2).with_dialect(dialect);
-                assert_eq!(
-                    crate::run_to_vec(src, &o2, b"\x05"),
-                    crate::run_to_vec(src, &o0, b"\x05"),
-                    "mismatch for {src} at {cell_width:?}"
-                );
-            }
+            assert_matches_o0(src, b"\x05", o2);
         }
     }
 
     #[test]
     fn a_wrapping_drain_matches_o0() {
-        // 255 steps down by 5, wrapping through 0 to land there after 51 trips.
-        let src = "-[>+<-----]>.";
-        assert_eq!(
-            crate::run_to_vec(src, &Config::new(OptLevel::O2), b""),
-            crate::run_to_vec(src, &Config::new(OptLevel::O0), b"")
-        );
+        // 255 goes down by 5, wrapping through 0 to land there after 51
+        // trips. Only at u8, where that takes trips rather than billions.
+        assert_matches_o0_under(Dialect::default(), "-[>+<-----]>.", b"", o2);
     }
 
     #[test]
     fn faults_match_o0() {
         for src in ["<[-]", "<[+.]", "+[<]", "<+"] {
-            let o0 = crate::run_to_vec(src, &Config::new(OptLevel::O0), b"").expect_err("faults");
-            let o2 = crate::run_to_vec(src, &Config::new(OptLevel::O2), b"").expect_err("faults");
-            assert_eq!(o2, o0, "mismatch for {src}");
+            assert_faults_match_o0(src, o2);
         }
+    }
+
+    fn o2(dialect: Dialect) -> Config {
+        Config::new(OptLevel::O2).with_dialect(dialect)
     }
 }

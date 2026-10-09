@@ -80,7 +80,7 @@ fn should_style<T: IsTerminal>(stream: &T) -> bool {
         && std::env::var_os("TERM").is_none_or(|v| v != "dumb")
 }
 
-pub(crate) fn run(args: Args) -> ExitCode {
+pub fn run(args: Args) -> ExitCode {
     eprintln!(
         "bfr {} repl at -{} -- :help for commands, :quit to leave",
         env!("CARGO_PKG_VERSION"),

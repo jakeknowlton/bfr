@@ -50,7 +50,7 @@ impl Frame {
 
 /// Move an effect's offsets by `cursor`, so an effect addressed from the
 /// cursor is addressed from the run's entry instead.
-pub fn rebase(kind: EffKind, cursor: isize) -> EffKind {
+pub(super) fn rebase(kind: EffKind, cursor: isize) -> EffKind {
     match kind {
         EffKind::Add { at, delta } => EffKind::Add {
             at: at + cursor,
@@ -96,6 +96,24 @@ impl Builder {
         let kind = rebase(kind, frame.cursor);
         frame.run_span = frame.run_span.merge(span);
         frame.effects.push(Eff::new(kind, span));
+    }
+
+    /// Append a copy of `node`. A run's effects join the open run, so the
+    /// result stays canonical. A loop or scan seals the open run first.
+    pub fn push_node(&mut self, node: &Node) {
+        match &node.kind {
+            NodeKind::Run(run) => {
+                for eff in &run.effects {
+                    self.push(eff.kind.clone(), eff.span);
+                }
+                self.bump(run.shift, node.span);
+            }
+            NodeKind::Loop(_) | NodeKind::Scan(_) => {
+                let frame = self.top();
+                frame.seal();
+                frame.nodes.push(node.clone());
+            }
+        }
     }
 
     /// Seal the current run and emit a [`crate::ir::Scan`] node.
@@ -162,25 +180,7 @@ impl Default for Builder {
 mod tests {
     use super::*;
     use crate::ir::NodeId;
-
-    /// The span of one source character at byte `i`.
-    fn sp(i: usize) -> Span {
-        Span::new(i, i + 1)
-    }
-
-    fn expect_run(node: &Node) -> &Run {
-        match &node.kind {
-            NodeKind::Run(run) => run,
-            other => panic!("expected a run, got {other:?}"),
-        }
-    }
-
-    fn expect_loop(node: &Node) -> &Loop {
-        match &node.kind {
-            NodeKind::Loop(l) => l,
-            other => panic!("expected a loop, got {other:?}"),
-        }
-    }
+    use crate::ir::test_support::{expect_loop, expect_run, sp};
 
     #[test]
     fn movement_folds_into_one_run() {
@@ -348,6 +348,54 @@ mod tests {
             NodeKind::Scan(scan) => assert_eq!(scan.stride, 2),
             other => panic!("expected a scan, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn push_node_copies_a_run_into_the_open_run() {
+        // `+` then a copy of `>+`, which must land at the moved cursor.
+        let mut b = Builder::new();
+        b.push(EffKind::Add { at: 0, delta: 1 }, sp(0));
+        b.bump(2, sp(1));
+        let copied = Node::new(
+            NodeKind::Run(Run {
+                effects: vec![Eff::new(EffKind::Add { at: 1, delta: 1 }, sp(3))],
+                shift: 1,
+            }),
+            Span::new(2, 4),
+        );
+        b.push_node(&copied);
+        let program = b.finish();
+
+        let nodes = program.body.nodes();
+        assert_eq!(nodes.len(), 1);
+        let run = expect_run(&nodes[0]);
+        assert_eq!(run.effects[0].kind, EffKind::Add { at: 0, delta: 1 });
+        assert_eq!(run.effects[1].kind, EffKind::Add { at: 3, delta: 1 });
+        assert_eq!(run.shift, 3);
+        assert_eq!(nodes[0].span, Span::new(0, 4));
+    }
+
+    #[test]
+    fn push_node_seals_before_a_loop_and_keeps_its_id() {
+        let mut b = Builder::new();
+        b.push(EffKind::Add { at: 0, delta: 1 }, sp(0));
+        let mut l = Node::new(
+            NodeKind::Loop(Loop {
+                body: Block::new(),
+            }),
+            sp(1),
+        );
+        l.id = NodeId(7);
+        b.push_node(&l);
+        b.push(EffKind::Add { at: 0, delta: 1 }, sp(3));
+        let program = b.finish();
+
+        let nodes = program.body.nodes();
+        assert_eq!(nodes.len(), 3);
+        expect_run(&nodes[0]);
+        assert_eq!(nodes[1].id, NodeId(7));
+        expect_loop(&nodes[1]);
+        expect_run(&nodes[2]);
     }
 
     #[test]

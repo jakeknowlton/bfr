@@ -6,6 +6,9 @@ pub mod drain_loop;
 pub mod normalize;
 pub mod partial_eval;
 pub mod scan;
+mod state;
+#[cfg(test)]
+pub mod test_support;
 pub mod unroll;
 
 use crate::config::{Dialect, OptLevel};
@@ -111,7 +114,7 @@ impl Pipeline {
     /// Run every pass in order, repeating until a full sweep reports no
     /// change or `max_sweeps` is reached.
     pub fn run(&self, program: &mut Program, ctx: &Ctx<'_>) -> Stats {
-        // TODO: Assert [`Program::validate`] in debug builds
+        debug_validate(program, ctx.dialect, "lowering");
         let mut stats = Stats {
             ops_before: program.op_count(),
             passes: self
@@ -134,6 +137,7 @@ impl Pipeline {
                     stat.changes += 1;
                     changed = true;
                 }
+                debug_validate(program, ctx.dialect, pass.name());
             }
             if !changed {
                 break;
@@ -141,6 +145,16 @@ impl Pipeline {
         }
         stats.ops_after = program.op_count();
         stats
+    }
+}
+
+/// In debug builds, panic if `program` breaks an IR invariant. `after`
+/// names the pass that just ran, for the message.
+fn debug_validate(program: &Program, dialect: &Dialect, after: &str) {
+    if cfg!(debug_assertions)
+        && let Err(violation) = program.validate(dialect)
+    {
+        panic!("IR invariant broken after {after}: {violation}");
     }
 }
 
@@ -244,6 +258,32 @@ mod tests {
         assert_eq!(stats.ops_before, expected);
         assert_eq!(stats.ops_after, expected);
         assert_eq!(stats.sweeps, 1);
+    }
+
+    /// Replaces the program with a scan whose stride is 0.
+    struct Vandal;
+
+    impl Pass for Vandal {
+        fn name(&self) -> &'static str {
+            "Vandal"
+        }
+
+        fn run(&self, program: &mut Program, _ctx: &Ctx<'_>) -> Changed {
+            use crate::error::Span;
+            use crate::ir::{Block, Node, NodeKind, Scan};
+            let scan = Node::new(NodeKind::Scan(Scan { stride: 0 }), Span::SYNTHETIC);
+            program.body = Block::from_nodes(vec![scan]);
+            true
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "IR invariant broken after Vandal")]
+    fn a_pass_that_breaks_an_invariant_panics_in_debug_builds() {
+        let mut pipeline = Pipeline::empty();
+        pipeline.push(Box::new(Vandal));
+        pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
     }
 
     #[test]

@@ -9,6 +9,8 @@
 //! # Ok::<(), bfr::Error>(())
 //! ```
 
+#![allow(rustdoc::private_intra_doc_links)]
+
 pub mod ast;
 pub mod config;
 pub mod error;

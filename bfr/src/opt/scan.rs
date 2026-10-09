@@ -35,6 +35,7 @@ mod tests {
     use crate::config::{Config, Dialect, OptLevel};
     use crate::error::Span;
     use crate::ir::{lower, print};
+    use crate::opt::test_support::{assert_faults_match_o0, assert_matches_o0};
     use crate::parser;
 
     fn scanned(src: &str) -> (Program, Changed) {
@@ -109,8 +110,8 @@ mod tests {
         assert_eq!(program, settled);
     }
 
-    fn with_scan_loop() -> Config {
-        let mut config = Config::new(OptLevel::O0);
+    fn with_scan_loop(dialect: Dialect) -> Config {
+        let mut config = Config::new(OptLevel::O0).with_dialect(dialect);
         config.pipeline.push(Box::new(ScanLoop));
         config
     }
@@ -119,18 +120,13 @@ mod tests {
     fn output_matches_o0() {
         // Past three cells, a stride of two, a zero-trip scan, and leftward.
         for src in ["+>+>+<<[>]<.", "+>>+>>+<<<<[>>]<<.", "[>]+.", ">>+>+<[<]>."] {
-            let o0 = crate::run_to_vec(src, &Config::new(OptLevel::O0), b"").expect("runs");
-            let scanned = crate::run_to_vec(src, &with_scan_loop(), b"").expect("runs");
-            assert_eq!(scanned, o0, "mismatch for {src}");
+            assert_matches_o0(src, b"", with_scan_loop);
         }
     }
 
     #[test]
     fn faults_match_o0() {
         // A scan checks every cell it lands on, as the loop test did.
-        let src = "+[<]";
-        let o0 = crate::run_to_vec(src, &Config::new(OptLevel::O0), b"").expect_err("faults");
-        let scanned = crate::run_to_vec(src, &with_scan_loop(), b"").expect_err("faults");
-        assert_eq!(scanned, o0);
+        assert_faults_match_o0("+[<]", with_scan_loop);
     }
 }

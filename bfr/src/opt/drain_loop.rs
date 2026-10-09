@@ -66,6 +66,7 @@ mod tests {
     use super::*;
     use crate::config::{Config, Dialect, OptLevel};
     use crate::ir::{lower, print};
+    use crate::opt::test_support::{assert_matches_o0, assert_matches_o0_under};
     use crate::parser;
 
     fn drained(src: &str) -> (Program, Changed) {
@@ -177,20 +178,24 @@ mod tests {
         assert_eq!(program, settled);
     }
 
+    fn with_drain_loop(dialect: Dialect) -> Config {
+        let mut config = Config::new(OptLevel::O0).with_dialect(dialect);
+        config.pipeline.push(Box::new(DrainLoop));
+        config
+    }
+
     #[test]
     fn output_matches_o0() {
-        // 3 * 4, a copy, a drain by an odd amount, and a zero-trip transfer.
-        for src in [
-            "+++[->++++<]>.",
-            "++[->+>+<<]>.>.",
-            "+++++[--->+<]>.",
-            ">[->+<]<.",
-        ] {
-            let o0 = crate::run_to_vec(src, &Config::new(OptLevel::O0), b"").expect("runs");
-            let mut config = Config::new(OptLevel::O0);
-            config.pipeline.push(Box::new(DrainLoop));
-            let drained = crate::run_to_vec(src, &config, b"").expect("runs");
-            assert_eq!(drained, o0, "mismatch for {src}");
+        // 3 * 4, a copy, and a zero-trip transfer.
+        for src in ["+++[->++++<]>.", "++[->+>+<<]>.>.", ">[->+<]<."] {
+            assert_matches_o0(src, b"", with_drain_loop);
         }
+    }
+
+    #[test]
+    fn an_odd_step_drain_matches_o0() {
+        // 5 going down by 3 only reaches 0 by wrapping. Only at u8, where
+        // that takes 171 trips rather than billions.
+        assert_matches_o0_under(Dialect::default(), "+++++[--->+<]>.", b"", with_drain_loop);
     }
 }

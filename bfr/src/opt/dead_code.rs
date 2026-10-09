@@ -92,7 +92,8 @@ mod tests {
     use super::*;
     use crate::config::Dialect;
     use crate::error::Span;
-    use crate::ir::{Eff, EffKind, Loop, Node, Run, Scan, lower, print};
+    use crate::ir::test_support::*;
+    use crate::ir::{lower, print};
     use crate::parser;
 
     fn swept(src: &str) -> (Program, Changed) {
@@ -100,28 +101,6 @@ mod tests {
         let mut program = lower::lower(&parser::parse(src).expect("parses"));
         let changed = DeadCode.run(&mut program, &Ctx::new(&dialect));
         (program, changed)
-    }
-
-    /// Assemble a program through the public block-editing API.
-    fn program_of(nodes: Vec<Node>) -> Program {
-        Program::new(Block::from_nodes(nodes))
-    }
-
-    fn loop_node(body_nodes: Vec<Node>) -> Node {
-        let body = Block::from_nodes(body_nodes);
-        Node::new(NodeKind::Loop(Loop { body }), Span::SYNTHETIC)
-    }
-
-    fn run_node(effects: Vec<EffKind>, shift: isize) -> Node {
-        let effects = effects
-            .into_iter()
-            .map(|kind| Eff::new(kind, Span::SYNTHETIC))
-            .collect();
-        Node::new(NodeKind::Run(Run { effects, shift }), Span::SYNTHETIC)
-    }
-
-    fn add(at: isize, delta: i32) -> EffKind {
-        EffKind::Add { at, delta }
     }
 
     #[test]
@@ -181,7 +160,7 @@ mod tests {
     fn a_shell_around_a_clearing_store_collapses() {
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
-            loop_node(vec![run_node(vec![EffKind::Store { at: 0, value: 0 }], 0)]),
+            loop_node(vec![run_node(vec![store(0, 0)], 0)]),
         ]);
         let dialect = Dialect::default();
         assert!(DeadCode.run(&mut program, &Ctx::new(&dialect)));
@@ -196,7 +175,7 @@ mod tests {
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
             loop_node(vec![run_node(
-                vec![add(1, 1), EffKind::Store { at: 0, value: 0 }],
+                vec![add(1, 1), store(0, 0)],
                 0,
             )]),
         ]);
@@ -214,7 +193,7 @@ mod tests {
     #[test]
     fn a_loop_after_a_clearing_store_dies() {
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Store { at: 0, value: 0 }], 0),
+            run_node(vec![store(0, 0)], 0),
             loop_node(vec![run_node(vec![add(1, 1)], 0)]),
         ]);
         let dialect = Dialect::default();
@@ -225,7 +204,7 @@ mod tests {
     #[test]
     fn a_shift_off_the_cleared_cell_keeps_the_loop() {
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Store { at: 0, value: 0 }], 1),
+            run_node(vec![store(0, 0)], 1),
             loop_node(vec![run_node(vec![add(0, -1)], 0)]),
         ]);
         let dialect = Dialect::default();
@@ -236,7 +215,7 @@ mod tests {
     fn a_loop_after_a_clear_of_the_landing_cell_dies() {
         // `>[-]` then a loop: the run is `[p+1] = 0; p += 1`.
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Store { at: 1, value: 0 }], 1),
+            run_node(vec![store(1, 0)], 1),
             loop_node(vec![run_node(vec![add(0, -1)], 0)]),
         ]);
         let dialect = Dialect::default();
@@ -250,7 +229,7 @@ mod tests {
         // pointer, which the original does not when `[p]` is 0.
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
-            loop_node(vec![run_node(vec![EffKind::Store { at: 1, value: 0 }], 1)]),
+            loop_node(vec![run_node(vec![store(1, 0)], 1)]),
         ]);
         let dialect = Dialect::default();
         assert!(!DeadCode.run(&mut program, &Ctx::new(&dialect)));
@@ -260,7 +239,7 @@ mod tests {
     fn a_loop_after_a_scan_dies() {
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
-            Node::new(NodeKind::Scan(Scan { stride: 1 }), Span::SYNTHETIC),
+            scan_node(1),
             loop_node(vec![run_node(vec![add(0, -1)], 0)]),
         ]);
         let dialect = Dialect::default();
@@ -271,7 +250,7 @@ mod tests {
     #[test]
     fn removal_merges_the_neighboring_runs() {
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Store { at: 0, value: 0 }], 0),
+            run_node(vec![store(0, 0)], 0),
             loop_node(vec![run_node(vec![add(1, 1)], 0)]),
             run_node(vec![add(0, 1)], 0),
         ]);
