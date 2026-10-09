@@ -182,6 +182,29 @@ impl Stats {
     }
 }
 
+/// A short report: the sweep and op counts, then one line per pass.
+impl core::fmt::Display for Stats {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(
+            f,
+            "pipeline: {} {}, {} -> {} ops",
+            self.sweeps,
+            if self.sweeps == 1 { "sweep" } else { "sweeps" },
+            self.ops_before,
+            self.ops_after
+        )?;
+        let width = self.passes.iter().map(|p| p.name.len()).max().unwrap_or(0);
+        for pass in &self.passes {
+            writeln!(
+                f,
+                "  {:width$}  runs {:>2}  changes {:>2}",
+                pass.name, pass.runs, pass.changes
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassStat {
     pub name: &'static str,
@@ -284,6 +307,19 @@ mod tests {
         let mut pipeline = Pipeline::empty();
         pipeline.push(Box::new(Vandal));
         pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
+    }
+
+    #[test]
+    fn stats_display_lists_every_pass() {
+        let mut pipeline = Pipeline::empty();
+        pipeline.push(Box::new(Countdown::new(1)));
+        let stats = pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
+        assert_eq!(
+            stats.to_string(),
+            "pipeline: 2 sweeps, 10 -> 10 ops\n  Countdown  runs  2  changes  1\n"
+        );
+        let stats = Pipeline::empty().run(&mut program(), &Ctx::new(&Dialect::default()));
+        assert_eq!(stats.to_string(), "pipeline: 1 sweep, 10 -> 10 ops\n");
     }
 
     #[test]

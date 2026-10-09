@@ -39,7 +39,7 @@ pub fn run_file(path: &Path, args: &Args) -> ExitCode {
     };
     warn_unconverged(&stats, &config.pipeline);
     if args.stats {
-        eprint!("{}", render_stats(&stats));
+        eprint!("{stats}");
     }
 
     match args.emit {
@@ -123,26 +123,6 @@ fn emit_text(path: Option<&Path>, text: &str) -> ExitCode {
         None => print!("{text}{newline}"),
     }
     ExitCode::SUCCESS
-}
-
-pub fn render_stats(stats: &Stats) -> String {
-    use std::fmt::Write as _;
-    let mut out = format!(
-        "pipeline: {} {}, {} -> {} ops\n",
-        stats.sweeps,
-        if stats.sweeps == 1 { "sweep" } else { "sweeps" },
-        stats.ops_before,
-        stats.ops_after
-    );
-    let width = stats.passes.iter().map(|p| p.name.len()).max().unwrap_or(0);
-    for pass in &stats.passes {
-        _ = writeln!(
-            out,
-            "  {:width$}  runs {:>2}  changes {:>2}",
-            pass.name, pass.runs, pass.changes
-        );
-    }
-    out
 }
 
 pub fn warn_unconverged(stats: &Stats, pipeline: &Pipeline) {

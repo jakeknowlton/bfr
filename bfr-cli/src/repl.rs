@@ -10,7 +10,7 @@ use bfr::error::ParseErrorKind;
 use bfr::{CellWidth, Config, EofBehavior, Error, Session, Stats, Step};
 
 use crate::cli::{Args, parse_opt_level};
-use crate::driver::{drive, render_stats, warn_unconverged};
+use crate::driver::{drive, warn_unconverged};
 
 const HELP: &str = "\
 :opt [0-3]     show or set the optimization level
@@ -169,7 +169,7 @@ impl Repl {
             "ir" => self.show_ir(arg),
             "tape" => self.show_tape(),
             "stats" => match &self.last {
-                Some(last) => print!("{}", render_stats(&last.stats)),
+                Some(last) => print!("{}", last.stats),
                 None => eprintln!("nothing has run yet"),
             },
             "load" => self.load(arg),
@@ -194,7 +194,7 @@ impl Repl {
             .run(&mut program, &bfr::opt::Ctx::new(&self.config.dialect));
         warn_unconverged(&stats, &self.config.pipeline);
         if self.args.stats {
-            eprint!("{}", render_stats(&stats));
+            eprint!("{stats}");
         }
 
         let mut session = Session::new(program, &self.config);
