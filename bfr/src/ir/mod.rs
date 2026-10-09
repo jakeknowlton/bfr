@@ -134,10 +134,12 @@ impl Block {
         self.nodes.is_empty()
     }
 
-    /// Mutable access to each node in place. The sequence itself cannot
-    /// change, so the block stays canonical.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Node> {
-        self.nodes.iter_mut()
+    /// Replace each node by the nodes `f` returns for it, then restore
+    /// canonical form.
+    pub fn map_nodes(&mut self, f: impl FnMut(Node) -> Vec<Node>) {
+        let nodes = core::mem::take(&mut self.nodes);
+        self.nodes = nodes.into_iter().flat_map(f).collect();
+        self.canonicalize();
     }
 
     /// Replace the nodes in `range` with `replacement`.

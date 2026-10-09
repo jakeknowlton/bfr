@@ -1,0 +1,9 @@
+# A loop that only counts its control cell down becomes a clear.
+
+# bfr: --passes DrainLoop
+loop {
+  [0] += -1
+}
+
+# expect:
+# [0] = 0

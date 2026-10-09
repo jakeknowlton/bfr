@@ -1,0 +1,11 @@
+# A store of the value a cell already holds is dropped, once an earlier
+# access has shown the cell is on the tape.
+
+# bfr: --passes ConstFold
+[0] += 3
+[0] = 3
+[+5] = 0
+
+# expect:
+# [0] = 3
+# [+5] = 0

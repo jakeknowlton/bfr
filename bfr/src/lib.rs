@@ -33,10 +33,15 @@ pub use tape::Tape;
 pub fn compile_to_ir(src: &str, config: &Config) -> Result<(ir::Program, Stats)> {
     let ast = parser::parse(src)?;
     let mut program = ir::lower::lower(&ast);
-    let stats = config
-        .pipeline
-        .run(&mut program, &opt::Ctx::new(&config.dialect));
+    let stats = optimize(&mut program, config);
     Ok((program, stats))
+}
+
+/// Run `config`'s pipeline over `program` in place.
+pub fn optimize(program: &mut ir::Program, config: &Config) -> Stats {
+    config
+        .pipeline
+        .run(program, &opt::Ctx::new(&config.dialect))
 }
 
 /// Run with a fixed input buffer and collect the output.

@@ -1,0 +1,13 @@
+# The same drain at u16 uses the inverse of 3 mod 65536.
+
+# bfr: --passes DrainLoop --cell-width u16
+loop {
+  [0] += -3
+  [+1] += 1
+}
+
+# expect:
+# loop {
+#   [+1] += [0] * 43691
+#   [0] = 0
+# }

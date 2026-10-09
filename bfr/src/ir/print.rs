@@ -145,9 +145,10 @@ fn effect(kind: &EffKind) -> String {
 }
 
 /// Parse the notation back into IR. Whitespace, including newlines, only
-/// separates tokens, so the layout is free, and a `;` may follow any
-/// statement, so a program can be written on one line. Every node's span
-/// is the byte range of its statements in `text`.
+/// separates tokens, so the layout is free, and a `;` can follow any
+/// statement, so a program can be written on one line. A `#` starts a
+/// comment that runs to the end of the line. Every node's span is the byte
+/// range of its statements in `text`.
 ///
 /// # Errors
 ///
@@ -198,8 +199,8 @@ enum Statement {
 }
 
 /// Reads the notation as a stream of tokens. Each method skips whitespace
-/// first, so a failed match leaves `pos` at the token it rejected and an
-/// error reports that position.
+/// and comments first, so a failed match leaves `pos` at the token it
+/// rejected and an error reports that position.
 struct Scanner<'a> {
     text: &'a str,
     pos: usize,
@@ -260,8 +261,15 @@ impl Scanner<'_> {
     }
 
     fn skip_whitespace(&mut self) {
-        let rest = &self.text[self.pos..];
-        self.pos += rest.len() - rest.trim_start().len();
+        loop {
+            let rest = &self.text[self.pos..];
+            self.pos += rest.len() - rest.trim_start().len();
+            if !self.text[self.pos..].starts_with('#') {
+                return;
+            }
+            let rest = &self.text[self.pos..];
+            self.pos += rest.find('\n').unwrap_or(rest.len());
+        }
     }
 
     /// Skip semicolons between statements.
@@ -538,6 +546,23 @@ mod tests {
             assert!(parse(text).is_ok(), "{text:?}");
         }
         assert!(parse(" ; ").expect("parses").body.is_empty());
+    }
+
+    #[test]
+    fn parse_ignores_comments() {
+        let text = [
+            "# a whole line\n",
+            "[0] += 1 # after a statement\n",
+            "loop { # after a brace\n",
+            "  [0] # even inside a statement\n",
+            "  += -1\n",
+            "}\n",
+            "# at the end, without a newline",
+        ]
+        .concat();
+        let program = parse(&text).expect("parses");
+        assert_eq!(print(&program), "[0] += 1\nloop {\n  [0] += -1\n}\n");
+        assert!(parse("#").expect("parses").body.is_empty());
     }
 
     #[test]

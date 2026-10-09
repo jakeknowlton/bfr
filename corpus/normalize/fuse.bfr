@@ -1,0 +1,13 @@
+# Adds to one cell fuse into a single add, even past effects on other cells.
+
+# bfr: --passes Normalize
+[0] += 1
+[+1] += 5
+[0] += 2
+[0] += 3
+shift -1
+
+# expect:
+# [0] += 6
+# [+1] += 5
+# shift -1

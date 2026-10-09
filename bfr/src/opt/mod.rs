@@ -13,6 +13,13 @@ pub mod unroll;
 
 use crate::config::{Dialect, OptLevel};
 use crate::ir::Program;
+use const_fold::ConstFold;
+use dead_code::DeadCode;
+use drain_loop::DrainLoop;
+use normalize::Normalize;
+use partial_eval::PartialEval;
+use scan::ScanLoop;
+use unroll::LoopUnroll;
 
 /// Whether a pass rewrote anything.
 pub type Changed = bool;
@@ -39,6 +46,28 @@ pub trait Pass {
     fn run(&self, program: &mut Program, ctx: &Ctx<'_>) -> Changed;
 }
 
+/// A constructor for a built-in pass with its default settings.
+type Constructor = fn() -> Box<dyn Pass>;
+
+const NORMALIZE: Constructor = || Box::new(Normalize);
+const DRAIN_LOOP: Constructor = || Box::new(DrainLoop);
+const SCAN_LOOP: Constructor = || Box::new(ScanLoop);
+const CONST_FOLD: Constructor = || Box::new(ConstFold);
+const LOOP_UNROLL: Constructor = || Box::new(LoopUnroll::default());
+const PARTIAL_EVAL: Constructor = || Box::new(PartialEval::default());
+const DEAD_CODE: Constructor = || Box::new(DeadCode);
+
+/// Every built-in pass.
+const REGISTRY: [Constructor; 7] = [
+    NORMALIZE,
+    DRAIN_LOOP,
+    SCAN_LOOP,
+    CONST_FOLD,
+    LOOP_UNROLL,
+    PARTIAL_EVAL,
+    DEAD_CODE,
+];
+
 /// An ordered list of passes, run to a fixed point.
 pub struct Pipeline {
     passes: Vec<Box<dyn Pass>>,
@@ -57,32 +86,52 @@ impl Pipeline {
         }
     }
 
+    /// The names of every built-in pass, as [`Pass::name`] reports them.
+    pub fn pass_names() -> Vec<&'static str> {
+        REGISTRY.iter().map(|build| build().name()).collect()
+    }
+
+    /// Build a pipeline from pass names, in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the first unknown pass and listing the
+    /// known ones.
+    pub fn named<S: AsRef<str>>(names: &[S]) -> Result<Pipeline, String> {
+        let mut p = Pipeline::empty();
+        for name in names {
+            let name = name.as_ref();
+            let Some(pass) = REGISTRY.iter().map(|build| build()).find(|pass| pass.name() == name)
+            else {
+                return Err(format!(
+                    "no pass named {name:?}, the passes are {}",
+                    Self::pass_names().join(", ")
+                ));
+            };
+            p.push(pass);
+        }
+        Ok(p)
+    }
+
     /// Build the preset pipeline for a level.
     pub fn for_level(level: OptLevel) -> Pipeline {
+        let passes: &[Constructor] = match level {
+            OptLevel::O0 => &[],
+            OptLevel::O1 => &[NORMALIZE, DRAIN_LOOP, DEAD_CODE],
+            OptLevel::O2 => &[NORMALIZE, DRAIN_LOOP, SCAN_LOOP, CONST_FOLD, DEAD_CODE],
+            OptLevel::O3 => &[
+                NORMALIZE,
+                DRAIN_LOOP,
+                SCAN_LOOP,
+                CONST_FOLD,
+                LOOP_UNROLL,
+                PARTIAL_EVAL,
+                DEAD_CODE,
+            ],
+        };
         let mut p = Pipeline::empty();
-        match level {
-            OptLevel::O0 => {}
-            OptLevel::O1 => {
-                p.push(Box::new(normalize::Normalize));
-                p.push(Box::new(drain_loop::DrainLoop));
-                p.push(Box::new(dead_code::DeadCode));
-            }
-            OptLevel::O2 => {
-                p.push(Box::new(normalize::Normalize));
-                p.push(Box::new(drain_loop::DrainLoop));
-                p.push(Box::new(scan::ScanLoop));
-                p.push(Box::new(const_fold::ConstFold));
-                p.push(Box::new(dead_code::DeadCode));
-            }
-            OptLevel::O3 => {
-                p.push(Box::new(normalize::Normalize));
-                p.push(Box::new(drain_loop::DrainLoop));
-                p.push(Box::new(scan::ScanLoop));
-                p.push(Box::new(const_fold::ConstFold));
-                p.push(Box::new(unroll::LoopUnroll::default()));
-                p.push(Box::new(partial_eval::PartialEval::default()));
-                p.push(Box::new(dead_code::DeadCode));
-            }
+        for build in passes {
+            p.push(build());
         }
         p
     }
@@ -320,6 +369,30 @@ mod tests {
         );
         let stats = Pipeline::empty().run(&mut program(), &Ctx::new(&Dialect::default()));
         assert_eq!(stats.to_string(), "pipeline: 1 sweep, 10 -> 10 ops\n");
+    }
+
+    #[test]
+    fn named_builds_passes_in_order() {
+        let pipeline = Pipeline::named(&["DeadCode", "Normalize"]).expect("known names");
+        assert_eq!(pipeline.names(), vec!["DeadCode", "Normalize"]);
+        assert!(Pipeline::named::<&str>(&[]).expect("empty").is_empty());
+    }
+
+    #[test]
+    fn named_rejects_an_unknown_pass() {
+        let error = Pipeline::named(&["Normalize", "Shrink"]).expect_err("unknown");
+        assert_eq!(
+            error,
+            "no pass named \"Shrink\", the passes are Normalize, DrainLoop, ScanLoop, \
+             ConstFold, LoopUnroll, PartialEval, DeadCode"
+        );
+    }
+
+    #[test]
+    fn every_built_in_pass_reports_its_registered_name() {
+        let names = Pipeline::pass_names();
+        let pipeline = Pipeline::named(&names).expect("all known");
+        assert_eq!(pipeline.names(), names);
     }
 
     #[test]

@@ -1,12 +1,15 @@
 //! Tracks which cells hold known values, starting from the zeroed tape,
-//! and uses that knowledge in two ways. Arithmetic on a known cell becomes
-//! a store. A loop whose control cell is known is settled: a known zero
-//! deletes the loop, and a known nonzero replaces it with one trip of its
-//! body, when that body is a single run that zeroes the control cell.
+//! and uses that knowledge in three ways. Arithmetic on a known cell
+//! becomes a store. A store of the value a cell already holds is dropped,
+//! once an earlier access has shown the cell is on the tape. A loop whose
+//! control cell is known is settled: a known zero deletes the loop, and a
+//! known nonzero replaces it with one trip of its body, when that body is
+//! a single run that zeroes the control cell.
 //!
 //! Examples
 //!
 //! `[0] += 3` at program start becomes `[0] = 3`.
+//! `[0] += 3; [0] = 3` becomes `[0] = 3`.
 //! `[0] = 3; loop { [+1] += [0] * 4; [0] = 0 }` becomes `[0] = 3; [+1] = 12; [0] = 0`.
 
 use crate::config::Dialect;
@@ -34,37 +37,36 @@ impl Pass for ConstFold {
 fn fold(block: &mut Block, site: BlockSite, dialect: &Dialect) -> bool {
     let mut state = State::on_entry(site);
     let mut changed = false;
-    // Splicing merges neighboring runs, so replacements wait until the
-    // walk is done.
-    let mut edits: Vec<(usize, Option<Node>)> = Vec::new();
-    for (i, node) in block.iter_mut().enumerate() {
-        let span = node.span;
+    block.map_nodes(|mut node| {
         match &mut node.kind {
             NodeKind::Run(run) => changed |= fold_run(run, &mut state, dialect),
             NodeKind::Scan(_) => {
                 // The test can only go once an access has proven the cell
                 // is on the tape, since the test itself could fault.
-                if state.get(0) == Known::Value(0) && state.accessed(0) {
-                    edits.push((i, None));
-                }
+                let dead = state.get(0) == Known::Value(0) && state.accessed(0);
                 state.pass_scan();
+                if dead {
+                    changed = true;
+                    return Vec::new();
+                }
             }
             NodeKind::Loop(l) => {
                 match state.get(0) {
                     Known::Value(0) => {
                         if state.accessed(0) {
-                            edits.push((i, None));
+                            changed = true;
+                            return Vec::new();
                         }
                     }
                     Known::Value(_) => {
                         if let Some(body) = single_trip(l) {
                             let mut body = body.clone();
-                            body.span = span.merge(body.span);
+                            body.span = node.span.merge(body.span);
                             if let NodeKind::Run(run) = &mut body.kind {
                                 fold_run(run, &mut state, dialect);
                             }
-                            edits.push((i, Some(body)));
-                            continue;
+                            changed = true;
+                            return vec![body];
                         }
                     }
                     Known::Unknown => {}
@@ -72,11 +74,8 @@ fn fold(block: &mut Block, site: BlockSite, dialect: &Dialect) -> bool {
                 state.pass_loop(l);
             }
         }
-    }
-    for (i, replacement) in edits.into_iter().rev() {
-        block.splice(i..i + 1, replacement.into_iter().collect());
-        changed = true;
-    }
+        vec![node]
+    });
     changed
 }
 
@@ -89,6 +88,7 @@ fn fold_run(run: &mut Run, state: &mut State, dialect: &Dialect) -> bool {
             changed = true;
         }
     }
+    run.effects.retain(|eff| !eff.kind.is_nop());
     state.shift(run.shift);
     changed
 }
@@ -125,6 +125,27 @@ mod tests {
         let (program, changed) = folded(vec![run_node(vec![add(0, 3), add(5, -1)], 0)]);
         assert!(changed);
         assert_eq!(print::print(&program), "[0] = 3\n[+5] = 255\n");
+    }
+
+    #[test]
+    fn a_store_of_the_known_value_is_dropped() {
+        let (program, changed) = folded(vec![run_node(vec![add(0, 3), store(0, 3)], 0)]);
+        assert!(changed);
+        assert_eq!(print::print(&program), "[0] = 3\n");
+        // An add that wraps back to the known value is the same store.
+        let (program, _) = folded(vec![run_node(vec![add(0, 3), add(0, 256)], 0)]);
+        assert_eq!(print::print(&program), "[0] = 3\n");
+    }
+
+    #[test]
+    fn a_store_to_an_unaccessed_cell_stays() {
+        // `[+5]` holds 0, but nothing has shown it is on the tape.
+        let (_, changed) = folded(vec![run_node(vec![store(5, 0)], 0)]);
+        assert!(!changed);
+        // The cell under the pointer at program start counts as accessed.
+        let (program, changed) = folded(vec![run_node(vec![store(0, 0)], 0)]);
+        assert!(changed);
+        assert!(program.body.is_empty());
     }
 
     #[test]
@@ -432,10 +453,7 @@ mod tests {
     fn the_worked_example_reaches_its_documented_form() {
         let config = Config::new(OptLevel::O2);
         let (program, _) = crate::compile_to_ir("+++[>++++<-]>.", &config).expect("parses");
-        assert_eq!(
-            print::print(&program),
-            "[0] = 0\n[+1] = 12\nwrite [+1]\nshift +1\n"
-        );
+        assert_eq!(print::print(&program), "[+1] = 12\nwrite [+1]\nshift +1\n");
     }
 
     #[test]

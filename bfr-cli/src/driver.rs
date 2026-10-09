@@ -5,21 +5,43 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
+use bfr::ir::Program;
 use bfr::opt::Stats;
 use bfr::{Pipeline, Session, Step};
 
 use crate::cli::{Args, Emit};
 
+/// Whether a path names an IR file rather than brainfuck source.
+pub fn is_ir_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "bfr")
+}
+
+/// Read a file as unoptimized IR, parsing it as brainfuck or as IR by its
+/// extension. Errors are already formatted for the terminal.
+pub fn load_program(path: &Path) -> Result<Program, String> {
+    let src = fs::read_to_string(path).map_err(|e| format!("error: {}: {e}", path.display()))?;
+    if is_ir_file(path) {
+        bfr::ir::print::parse(&src)
+            .map_err(|(offset, message)| format!("error: {}: byte {offset}: {message}", path.display()))
+    } else {
+        let ast = bfr::parser::parse(&src).map_err(|e| e.to_string())?;
+        Ok(bfr::ir::lower::lower(&ast))
+    }
+}
+
 pub fn run_file(path: &Path, args: &Args) -> ExitCode {
-    let src = match fs::read_to_string(path) {
-        Ok(src) => src,
-        Err(e) => {
-            eprintln!("error: {}: {e}", path.display());
+    if args.emit == Emit::Ast {
+        if is_ir_file(path) {
+            eprintln!("error: an IR file has no AST to emit");
             return ExitCode::FAILURE;
         }
-    };
-
-    if args.emit == Emit::Ast {
+        let src = match fs::read_to_string(path) {
+            Ok(src) => src,
+            Err(e) => {
+                eprintln!("error: {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        };
         return match bfr::parser::parse(&src) {
             Ok(ast) => emit_text(args.output.as_deref(), &bfr::ast::print(&ast)),
             Err(e) => {
@@ -29,14 +51,21 @@ pub fn run_file(path: &Path, args: &Args) -> ExitCode {
         };
     }
 
-    let config = args.config();
-    let (program, stats) = match bfr::compile_to_ir(&src, &config) {
-        Ok(compiled) => compiled,
+    let config = match args.config() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut program = match load_program(path) {
+        Ok(program) => program,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
+    let stats = bfr::optimize(&mut program, &config);
     warn_unconverged(&stats, &config.pipeline);
     if args.stats {
         eprint!("{stats}");

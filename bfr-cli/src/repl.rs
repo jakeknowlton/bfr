@@ -10,7 +10,7 @@ use bfr::error::ParseErrorKind;
 use bfr::{CellWidth, Config, EofBehavior, Error, Session, Stats, Step};
 
 use crate::cli::{Args, parse_opt_level};
-use crate::driver::{drive, warn_unconverged};
+use crate::driver::{drive, is_ir_file, load_program, warn_unconverged};
 
 const HELP: &str = "\
 :opt [0-3]     show or set the optimization level
@@ -19,7 +19,7 @@ const HELP: &str = "\
 :ast [code]    echo the parse as canonical source (default: the last program run)
 :tape          pointer, executed IR steps, and nonzero cells after the last run
 :stats         pipeline statistics for the last run
-:load <file>   run a source file
+:load <file>   run a file: brainfuck, or IR if it ends in .bfr
 :cancel        discard the unfinished input at the ...> prompt
 :help          this text
 :quit, :q      leave";
@@ -52,7 +52,8 @@ struct Repl {
 struct LastRun {
     session: Session,
     stats: Stats,
-    ast: Ast,
+    /// `None` when the program was loaded as IR.
+    ast: Option<Ast>,
 }
 
 /// Tints program output cyan so it is visually distinct from inputs and prompts.
@@ -86,8 +87,15 @@ pub fn run(args: Args) -> ExitCode {
         env!("CARGO_PKG_VERSION"),
         args.opt
     );
+    let config = match args.config() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut repl = Repl {
-        config: args.config(),
+        config,
         args,
         pending: String::new(),
         last: None,
@@ -187,11 +195,13 @@ impl Repl {
                 return;
             }
         };
-        let mut program = bfr::ir::lower::lower(&ast);
-        let stats = self
-            .config
-            .pipeline
-            .run(&mut program, &bfr::opt::Ctx::new(&self.config.dialect));
+        let program = bfr::ir::lower::lower(&ast);
+        self.run_program(program, Some(ast));
+    }
+
+    /// Optimize and run `program`, keeping it for the inspection commands.
+    fn run_program(&mut self, mut program: bfr::ir::Program, ast: Option<Ast>) {
+        let stats = bfr::optimize(&mut program, &self.config);
         warn_unconverged(&stats, &self.config.pipeline);
         if self.args.stats {
             eprint!("{stats}");
@@ -236,7 +246,7 @@ impl Repl {
         match parse_opt_level(arg) {
             Ok(level) => {
                 self.args.opt = level;
-                self.config = self.args.config();
+                self.config = self.args.config().expect("the passes were checked at startup");
                 println!("{level}");
             }
             Err(e) => eprintln!("{e}"),
@@ -256,6 +266,7 @@ impl Repl {
             EofBehavior::MinusOne => "minus-one",
         };
         println!("opt            {}", self.args.opt);
+        println!("passes         {}", self.config.pipeline.names().join(", "));
         println!("cell width     {cell_width}");
         println!("eof            {eof}");
         println!("tape           {} cells", dialect.tape_cells);
@@ -267,8 +278,9 @@ impl Repl {
 
     fn show_ast(&self, code: &str) {
         if code.is_empty() {
-            match &self.last {
-                Some(last) => println!("{}", bfr::ast::print(&last.ast)),
+            match self.last.as_ref().map(|last| last.ast.as_ref()) {
+                Some(Some(ast)) => println!("{}", bfr::ast::print(ast)),
+                Some(None) => eprintln!("the last program was loaded as IR, so it has no AST"),
                 None => eprintln!("nothing has run yet"),
             }
             return;
@@ -337,6 +349,13 @@ impl Repl {
             return;
         }
         let path = expand_home(path);
+        if is_ir_file(&path) {
+            match load_program(&path) {
+                Ok(program) => self.run_program(program, None),
+                Err(e) => eprintln!("{e}"),
+            }
+            return;
+        }
         match fs::read_to_string(&path) {
             Ok(src) => self.eval(&src),
             Err(e) => eprintln!("error: {}: {e}", path.display()),

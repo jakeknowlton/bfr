@@ -1,0 +1,14 @@
+# A transfer keeps a shell, so the target is only touched when the control
+# cell is nonzero, as in the original.
+
+# bfr: --passes DrainLoop
+loop {
+  [0] += -1
+  [+1] += 1
+}
+
+# expect:
+# loop {
+#   [+1] += [0]
+#   [0] = 0
+# }

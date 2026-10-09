@@ -1,0 +1,13 @@
+# A control cell stepping by 3 drains through the inverse of 3 mod 256.
+
+# bfr: --passes DrainLoop --cell-width u8
+loop {
+  [0] += -3
+  [+1] += 1
+}
+
+# expect:
+# loop {
+#   [+1] += [0] * 171
+#   [0] = 0
+# }

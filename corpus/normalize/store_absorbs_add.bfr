@@ -1,0 +1,12 @@
+# An add after a store to the same cell folds into the store, wrapping at
+# the cell width.
+
+# bfr: --passes Normalize
+[0] = 3
+[0] += 2
+[+1] = 255
+[+1] += 1
+
+# expect:
+# [0] = 5
+# [+1] = 0

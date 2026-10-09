@@ -83,6 +83,19 @@ impl State {
         })
     }
 
+    /// Record a store, returning the effect it amounts to. The store
+    /// is redundant when the cell already held `value` and is known
+    /// to be on the tape.
+    fn store(&mut self, at: isize, value: Cell) -> EffKind {
+        let redundant = self.get(at) == Known::Value(value) && self.accessed(at);
+        self.set(at, Known::Value(value));
+        if redundant {
+            EffKind::Add { at, delta: 0 }
+        } else {
+            EffKind::Store { at, value }
+        }
+    }
+
     /// Advance past a run without rewriting it.
     pub fn advance(&mut self, run: &Run, dialect: &Dialect) {
         for eff in &run.effects {
@@ -129,8 +142,7 @@ impl State {
             EffKind::Add { at, delta } => match self.get(at) {
                 Known::Value(v) => {
                     let value = arith::apply_delta(v, delta, dialect);
-                    self.set(at, Known::Value(value));
-                    Some(EffKind::Store { at, value })
+                    Some(self.store(at, value))
                 }
                 Known::Unknown => {
                     self.set(at, Known::Unknown);
@@ -138,8 +150,8 @@ impl State {
                 }
             },
             EffKind::Store { at, value } => {
-                self.set(at, Known::Value(value));
-                None
+                let folded = self.store(at, value);
+                (folded != *kind).then_some(folded)
             }
             EffKind::AddScaled { at, from, factor } => {
                 self.touch(from);
@@ -147,8 +159,7 @@ impl State {
                     (Known::Value(a), Known::Value(f)) => {
                         let delta = arith::scaled_delta(f, factor, dialect);
                         let value = arith::apply_delta(a, delta, dialect);
-                        self.set(at, Known::Value(value));
-                        Some(EffKind::Store { at, value })
+                        Some(self.store(at, value))
                     }
                     (Known::Unknown, Known::Value(f)) => {
                         self.set(at, Known::Unknown);

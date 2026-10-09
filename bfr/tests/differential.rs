@@ -1,11 +1,11 @@
 //! Every optimization level agrees with `-O0` under the interpreter, on
-//! output, final tape, and fault. `-O3` joins once its passes exist.
+//! output, final tape, and fault.
 
 use bfr::{
     CellWidth, Config, Dialect, EofBehavior, FaultCode, OptLevel, RuntimeError, Session, Step,
 };
 
-const LEVELS: [OptLevel; 2] = [OptLevel::O1, OptLevel::O2];
+const LEVELS: [OptLevel; 3] = [OptLevel::O1, OptLevel::O2, OptLevel::O3];
 
 /// Enough for every program here. Running out means a program hung, and
 /// the test fails loudly instead.
@@ -161,7 +161,7 @@ fn bounds_violations_fault_alike() {
 
 #[test]
 fn fuel_terminates_infinite_loops() {
-    for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+    for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::O3] {
         let config = Config::new(level).with_fuel(10_000);
         match run("+[]", &config, b"") {
             Outcome::Fault(RuntimeError { code, .. }) => assert_eq!(code, FaultCode::OutOfFuel),

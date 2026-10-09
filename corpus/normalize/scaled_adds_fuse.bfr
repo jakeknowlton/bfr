@@ -1,0 +1,8 @@
+# Scaled adds with the same source and destination sum their factors.
+
+# bfr: --passes Normalize
+[+1] += [0] * 2
+[+1] += [0] * 3
+
+# expect:
+# [+1] += [0] * 5

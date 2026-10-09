@@ -2,18 +2,23 @@
 
 use std::path::PathBuf;
 
-use bfr::{CellWidth, Config, Dialect, EofBehavior, OptLevel};
+use bfr::{CellWidth, Config, Dialect, EofBehavior, OptLevel, Pipeline};
 use clap::{Parser, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "bfr", version, about)]
 pub struct Args {
-    /// Brainfuck source file. Omit to start the repl.
+    /// Source file: brainfuck, or IR if it ends in `.bfr`. Omit to start
+    /// the repl.
     pub file: Option<PathBuf>,
 
     /// Optimization level.
     #[arg(short = 'O', value_parser = parse_opt_level, default_value = "1")]
     pub opt: OptLevel,
+
+    /// Run exactly these passes, in order, instead of the level's pipeline.
+    #[arg(long, value_delimiter = ',', value_name = "NAME,...")]
+    passes: Vec<String>,
 
     /// What to produce.
     #[arg(long, value_enum, default_value_t = Emit::Run)]
@@ -89,7 +94,12 @@ pub fn parse_opt_level(s: &str) -> Result<OptLevel, String> {
 }
 
 impl Args {
-    pub fn config(&self) -> Config {
+    /// The configuration these arguments describe.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when `--passes` names a pass that does not exist.
+    pub fn config(&self) -> Result<Config, String> {
         let mut config = Config::new(self.opt).with_dialect(Dialect {
             cell_width: match self.cell_width {
                 Width::U8 => CellWidth::U8,
@@ -105,14 +115,17 @@ impl Args {
             origin: 0,
         });
         config.fuel = self.fuel;
+        if !self.passes.is_empty() {
+            config.pipeline = Pipeline::named(&self.passes)?;
+        }
         for name in &self.disabled {
             if config.pipeline.disable(name) == 0 {
                 eprintln!(
-                    "warning: no pass named {name:?}; available: {:?}",
-                    config.pipeline.names()
+                    "warning: no pass named {name:?} in the pipeline, the passes are {}",
+                    Pipeline::pass_names().join(", ")
                 );
             }
         }
-        config
+        Ok(config)
     }
 }
