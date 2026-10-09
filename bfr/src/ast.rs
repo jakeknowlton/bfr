@@ -1,7 +1,7 @@
-//! Syntax tree
+//! Syntax tree.
 //!
-//! This level is not concerned with optimization. It exists so that the parser
-//! stays trivial and total and so source spans have a natural home.
+//! This level does no optimization. It exists so that the parser can stay a
+//! simple single pass, and so source spans have a natural home.
 
 use crate::error::Span;
 

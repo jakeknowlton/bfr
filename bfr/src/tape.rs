@@ -22,7 +22,8 @@ impl Tape {
         self.dialect.tape_cells
     }
 
-    /// Read one cell, honoring the configured width. `None` out of range.
+    /// Read one cell at the configured width. Returns `None` when `index`
+    /// is out of range.
     pub fn get(&self, index: usize) -> Option<ir::Cell> {
         let width = self.dialect.cell_width.bytes();
         let bytes = self.bytes.get(index.checked_mul(width)?..)?.get(..width)?;

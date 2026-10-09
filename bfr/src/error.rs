@@ -76,7 +76,8 @@ pub struct RuntimeError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum FaultCode {
-    /// Ran to completion; the `0` an entry point returns on success.
+    /// The program ran to completion. This is the `0` an entry point
+    /// returns on success.
     None = 0,
     /// Pointer moved left of cell 0.
     TapeUnderflow = 1,

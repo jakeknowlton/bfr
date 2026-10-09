@@ -20,7 +20,8 @@ struct Frame {
 ///
 /// Returns an error if brackets are unbalanced.
 pub fn parse(src: &str) -> Result<Ast> {
-    // Each element after the first in the stack represents a nested loop body
+    // The bottom frame is the program body. Every frame above it is a loop
+    // body that is still open.
     let mut stack = vec![Frame {
         open: 0,
         body: Vec::new(),
@@ -60,7 +61,7 @@ pub fn parse(src: &str) -> Result<Ast> {
                 );
                 continue;
             }
-            _ => continue, // Skip all other characters
+            _ => continue, // Every other byte is a comment
         };
 
         push(
@@ -72,7 +73,7 @@ pub fn parse(src: &str) -> Result<Ast> {
         );
     }
 
-    // If there is at least one other frame
+    // Any frame left above the bottom one is a loop that was never closed
     if let Some(frame) = stack.get(1) {
         return Err(ParseError {
             kind: ParseErrorKind::UnmatchedOpen,
@@ -87,7 +88,7 @@ pub fn parse(src: &str) -> Result<Ast> {
     })
 }
 
-/// Helper to push a node onto the parsing stack.
+/// Push a node onto the innermost open body.
 fn push(stack: &mut [Frame], node: Node) {
     stack
         .last_mut()

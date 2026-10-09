@@ -1,7 +1,8 @@
-//! A resumable, pull-based interpreter over [`crate::ir::Program`].
+//! A resumable interpreter over [`crate::ir::Program`], driven by the caller.
 //!
-//! This first flattens the program into an op array where one op is exactly
-//! one interp step, after which the program can be executed.
+//! [`Session::new`] first flattens the program into a list of ops, where one
+//! op is exactly one step. The session then executes ops as the caller asks
+//! for them.
 
 use std::collections::VecDeque;
 
@@ -25,22 +26,23 @@ pub enum Step {
     Fault(RuntimeError),
 }
 
-/// Which node each op belongs to and the effect within it
+/// The node an op belongs to, and which effect of that node it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub node: NodeId,
-    /// A run's closing shift is `effects.len()`. Loop tests and scan steps are 0.
+    /// Index of the effect within its run. A run's closing shift is
+    /// `effects.len()`. Loop tests and scan steps are always 0.
     pub effect: usize,
 }
 
-/// One executable step, in the flat form [`Session::new`] compiles to.
+/// One step, in the flat form [`Session::new`] compiles to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
     Add {
         at: isize,
         delta: CellDelta,
     },
-    Set {
+    Store {
         at: isize,
         value: Cell,
     },
@@ -93,13 +95,14 @@ impl Code {
     }
 }
 
-/// Flatten the tree and rotate each loop into a head test plus a tail test
-/// so every trip boundary is exactly one test step.
+/// Flatten the tree. Each loop becomes a test at its head and a test at
+/// its tail, so every trip boundary is exactly one step.
 fn flatten(program: &Program) -> Code {
     struct Frame<'a> {
         nodes: &'a [Node],
         next: usize,
-        /// The owning loop's `EnterLoop` index, patched when the body closes.
+        /// Index of the owning loop's `EnterLoop`, whose `exit` is patched
+        /// when the body closes.
         enter: Option<usize>,
     }
 
@@ -114,16 +117,17 @@ fn flatten(program: &Program) -> Code {
         if frame.next == frame.nodes.len() {
             let enter = frame.enter;
             stack.pop();
-            // `None` only for the first frame
+            // Only the program body has no owning loop
             let Some(e) = enter else { continue };
             let id = code.source[e].node;
-            // Jumps back to `e + 1` to avoid re-checking the same condition on `[`
+            // Jump to just past `EnterLoop`, since this op has already
+            // tested the control cell
             code.push(Op::BackEdge { top: e + 1 }, id, 0);
             let after = code.ops.len();
             let Op::EnterLoop { exit } = &mut code.ops[e] else {
                 unreachable!("`enter` indexes an EnterLoop");
             };
-            // Fix forward edge
+            // The loop's end is known now, so fill in the exit
             *exit = after;
             continue;
         }
@@ -136,7 +140,7 @@ fn flatten(program: &Program) -> Code {
                 for (i, eff) in run.effects.iter().enumerate() {
                     let op = match eff.kind {
                         EffKind::Add { at, delta } => Op::Add { at, delta },
-                        EffKind::Set { at, value } => Op::Set { at, value },
+                        EffKind::Store { at, value } => Op::Store { at, value },
                         EffKind::AddScaled { at, from, factor } => {
                             Op::AddScaled { at, from, factor }
                         }
@@ -172,9 +176,9 @@ fn flatten(program: &Program) -> Code {
     code
 }
 
-/// Execution state of a program.
+/// A program and its execution state.
 pub struct Session {
-    /// This is only kept for dumps and side tables.
+    /// Kept only for dumps and side tables. Execution uses `code`.
     program: Program,
     code: Code,
     pc: usize,
@@ -187,9 +191,11 @@ pub struct Session {
     input_closed: bool,
     output: Vec<u8>,
     fault: Option<RuntimeError>,
-    /// Node of the most recently retired step, for breakpoint transitions.
+    /// Node of the most recently executed step, so breakpoints fire only
+    /// when execution enters a node.
     last_node: Option<NodeId>,
-    /// Where a breakpoint was last hit.
+    /// The op a breakpoint last stopped at, so resuming does not stop
+    /// there again.
     last_breakpoint: Option<usize>,
 }
 
@@ -216,14 +222,13 @@ impl Session {
         }
     }
 
-    /// Execute one step with a budget of one.
-    /// Never returns [`Step::Breakpoint`].
+    /// Execute one step. Never returns [`Step::Breakpoint`].
     pub fn step(&mut self) -> Step {
         self.run(1)
     }
 
-    /// Execute up to `budget` steps,
-    /// returning early on anything that needs the caller.
+    /// Execute up to `budget` steps, returning early on anything that
+    /// needs the caller.
     pub fn run(&mut self, budget: u64) -> Step {
         self.run_until(budget, &[])
     }
@@ -250,10 +255,10 @@ impl Session {
                 return stop;
             }
             self.last_node = Some(node);
-            // Clear the last breakpoint since we've now successfully retired a step
+            // A step has executed, so the last breakpoint may fire again
             self.last_breakpoint = None;
         }
-        // Report the status now that the budget is spent
+        // The budget is spent, so report where things stand
         if let Some(fault) = self.fault {
             Step::Fault(fault)
         } else if self.pc == self.code.ops.len() {
@@ -263,8 +268,8 @@ impl Session {
         }
     }
 
-    /// Execute the current op. An `Err` indicates an outcome that
-    /// needs the caller, with the current step not retired.
+    /// Execute the current op. `Err` means the caller is needed and the
+    /// step did not execute.
     fn exec_op(&mut self) -> Result<(), Step> {
         if self.fuel == Some(0) {
             return Err(self.fail(FaultCode::OutOfFuel, self.ptr));
@@ -275,7 +280,7 @@ impl Session {
                 self.store(at, v as Cell);
                 self.pc += 1;
             }
-            Op::Set { at, value } => {
+            Op::Store { at, value } => {
                 let index = self.cell(at)?;
                 self.tape.set(index, value);
                 self.pc += 1;
@@ -339,7 +344,7 @@ impl Session {
         Ok(())
     }
 
-    /// Record the fault, which makes the session terminal.
+    /// Record the fault, which finishes the session.
     fn fail(&mut self, code: FaultCode, position: isize) -> Step {
         let fault = RuntimeError { code, position };
         self.fault = Some(fault);
@@ -379,8 +384,8 @@ impl Session {
         self.input.extend(bytes);
     }
 
-    /// Mark input as permanently exhausted, with any pending and every
-    /// subsequent `read` resolving per [`crate::config::EofBehavior`].
+    /// Mark input as permanently exhausted. The pending `read`, if any,
+    /// and every later one then follow [`crate::config::EofBehavior`].
     pub fn close_input(&mut self) {
         self.input_closed = true;
     }
@@ -390,8 +395,7 @@ impl Session {
         core::mem::take(&mut self.output)
     }
 
-    /// The step that is about to execute in the program.
-    /// `None` once the session is finished.
+    /// The step about to execute. `None` once the session is finished.
     pub fn position(&self) -> Option<Position> {
         if self.fault.is_some() || self.pc == self.code.ops.len() {
             return None;
@@ -408,12 +412,12 @@ impl Session {
         &self.tape
     }
 
-    /// This index may be outside the tape, since only accesses fault.
+    /// The pointer. It may sit outside the tape, since only accesses fault.
     pub fn ptr(&self) -> isize {
         self.ptr
     }
 
-    /// Steps retired so far.
+    /// Steps executed so far.
     pub fn steps(&self) -> u64 {
         self.steps
     }
@@ -501,7 +505,7 @@ mod tests {
         assert_eq!(s.steps(), 2);
         assert_eq!(s.run(100), Step::Done);
         assert_eq!(s.steps(), 5);
-        // Terminal states report even with no budget.
+        // A finished session reports its state even with no budget.
         assert_eq!(s.run(0), Step::Done);
     }
 
@@ -669,7 +673,7 @@ mod tests {
     fn set_stores_masked() {
         let mut b = Builder::new();
         b.push(
-            EffKind::Set {
+            EffKind::Store {
                 at: 0,
                 value: 0xabcd,
             },
@@ -741,7 +745,7 @@ mod tests {
         assert_eq!(finish(&mut s), Step::Fault(fault));
         assert_eq!(s.fault(), Some(fault));
         assert_eq!(s.position(), None);
-        // Terminal outcomes are sticky and the tape stays inspectable.
+        // The fault is permanent, but the tape can still be read.
         assert_eq!(s.step(), Step::Fault(fault));
         assert_eq!(s.tape().get(0), Some(0));
     }
@@ -772,7 +776,7 @@ mod tests {
 
     #[test]
     fn out_of_bounds_read_faults_before_parking() {
-        // An in-bounds read with no input would park; bounds go first.
+        // An in-bounds read with no input would park, but bounds go first.
         let mut s = session_with("<,", &tiny());
         assert_eq!(
             finish(&mut s),
@@ -872,7 +876,7 @@ mod tests {
     fn scans_burn_fuel() {
         let program = scan_program(&[(0, 1), (1, 1)], 1);
         let mut s = Session::new(program, &config().with_fuel(3));
-        // Two adds and one scan test retire; the next test has no fuel.
+        // Two adds and one scan test execute, then the next test has no fuel.
         assert!(matches!(
             finish(&mut s),
             Step::Fault(RuntimeError {
@@ -896,7 +900,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loop_head_breakpoint_fires_per_iteration() {
+    fn a_loop_head_breakpoint_fires_per_trip() {
         let mut s = session("++[-]");
         let bp = [NodeId(1)];
         assert_eq!(s.run_until(u64::MAX, &bp), Step::Breakpoint); // entry test

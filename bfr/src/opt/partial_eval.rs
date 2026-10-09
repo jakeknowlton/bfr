@@ -1,6 +1,9 @@
-//! Executes the whole program at compile time until it hits something undecidable
-//! (input, an unknowable trip count, its fuel or output budget),
-//! then emits only the residue.
+//! Runs the program at compile time, tracking what every cell holds. An
+//! effect whose inputs are known is applied to that tracked state. An effect
+//! that depends on an unknown value, such as the byte a read produces, is
+//! kept and leaves its cell unknown. Evaluation stops only when it can no
+//! longer continue, such as at a loop whose control cell is unknown, or when
+//! the fuel or output budget runs out.
 //!
 //! Examples
 //!
@@ -11,9 +14,9 @@ use crate::ir::Program;
 use crate::opt::{Changed, Ctx, Pass};
 
 pub struct PartialEval {
-    /// Maximum abstract steps to execute at compile time.
+    /// Maximum steps to execute at compile time.
     pub fuel: u64,
-    /// Maximum bytes of statically-known output to materialize.
+    /// Maximum bytes of compile-time output to keep.
     pub max_output: usize,
 }
 

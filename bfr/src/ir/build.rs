@@ -8,12 +8,12 @@ pub struct Builder {
     frames: Vec<Frame>,
 }
 
-/// A block's completed nodes, plus the current run the cursor is walking through.
+/// A block's finished nodes, plus the run still being built.
 struct Frame {
     nodes: Vec<Node>,
     /// Span of the `[` that opened this frame.
     open_span: Span,
-    /// Effects of the open run, already rebased to run-entry coordinates.
+    /// Effects of the open run, already addressed from the run's entry.
     effects: Vec<Eff>,
     /// Merged span of the open run, shift characters included.
     run_span: Span,
@@ -48,14 +48,15 @@ impl Frame {
     }
 }
 
-/// Rebase an effect's offsets by `cursor`.
+/// Move an effect's offsets by `cursor`, so an effect addressed from the
+/// cursor is addressed from the run's entry instead.
 pub fn rebase(kind: EffKind, cursor: isize) -> EffKind {
     match kind {
         EffKind::Add { at, delta } => EffKind::Add {
             at: at + cursor,
             delta,
         },
-        EffKind::Set { at, value } => EffKind::Set {
+        EffKind::Store { at, value } => EffKind::Store {
             at: at + cursor,
             value,
         },
@@ -89,7 +90,7 @@ impl Builder {
         frame.run_span = frame.run_span.merge(span);
     }
 
-    /// Push one effect at cursor-relative offsets.
+    /// Push one effect whose offsets are relative to the cursor.
     pub fn push(&mut self, kind: EffKind, span: Span) {
         let frame = self.top();
         let kind = rebase(kind, frame.cursor);
@@ -197,7 +198,7 @@ mod tests {
         assert_eq!(run.effects.len(), 1);
         assert_eq!(run.effects[0].kind, EffKind::Add { at: 2, delta: 1 });
         assert_eq!(run.shift, 1);
-        // Provenance covers all four characters, shift characters included.
+        // The span covers all four characters, shift characters included.
         assert_eq!(nodes[0].span, Span::new(0, 4));
         assert_eq!(nodes[0].id, NodeId::UNASSIGNED);
     }

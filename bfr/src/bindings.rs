@@ -56,7 +56,7 @@ impl DebugSession {
         todo!("DebugSession::run_until")
     }
 
-    /// Append input bytes; `read`s self-serve from the queue.
+    /// Append input bytes. Each `read` takes the next byte from the queue.
     ///
     /// # Errors
     ///
@@ -89,7 +89,8 @@ impl DebugSession {
         todo!("DebugSession::line_ids")
     }
 
-    /// `NodeId` about to execute. `null` once finished.
+    /// The id of the node about to execute. `null` once the session is
+    /// finished.
     #[wasm_bindgen(js_name = nodeId)]
     pub fn node_id(&self) -> Option<u32> {
         todo!("DebugSession::node_id")
@@ -105,12 +106,12 @@ impl DebugSession {
         todo!("DebugSession::cells")
     }
 
-    /// Steps retired so far.
+    /// Steps executed so far.
     pub fn steps(&self) -> f64 {
         todo!("DebugSession::steps")
     }
 
-    /// Fault message once `Fault` was returned.
+    /// The fault message, once `Fault` has been returned.
     #[wasm_bindgen(js_name = faultMessage)]
     pub fn fault_message(&self) -> Option<String> {
         todo!("DebugSession::fault_message")

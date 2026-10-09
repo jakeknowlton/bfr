@@ -73,10 +73,11 @@ pub fn run_file(path: &Path, args: &Args) -> ExitCode {
     }
 }
 
-/// Drive `session` to a terminal outcome.
-/// Returns the final step result and the last output byte for the REPL.
+/// Drive `session` until it is done or faults. Returns the final step and
+/// the last output byte, which the REPL uses to decide whether it needs a
+/// newline.
 pub fn drive(session: &mut Session, out: &mut dyn Write) -> io::Result<(Step, Option<u8>)> {
-    // Slice the run so long programs stream their output
+    // Run in slices so long programs stream their output
     const BUDGET: u64 = 1 << 20;
     let mut tail = None;
     loop {

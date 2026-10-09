@@ -1,4 +1,4 @@
-//! Interactive read-eval-print loop
+//! Interactive read-eval-print loop.
 
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -44,7 +44,8 @@ struct Repl {
     status: ExitCode,
     /// Whether program output is tinted (see [`should_style`]).
     tint: bool,
-    /// Whether the prompt is styled; keyed to stderr, where prompts live.
+    /// Whether the prompt is styled. Decided by stderr, since that is
+    /// where prompts go.
     styled_prompt: bool,
 }
 
@@ -109,7 +110,7 @@ pub(crate) fn run(args: Args) -> ExitCode {
         let mut line = String::new();
         match io::stdin().read_line(&mut line) {
             Ok(0) => {
-                // Make sure the shell's prompt is on its own line
+                // Make sure the user's shell prompt is on its own line
                 if io::stdin().is_terminal() {
                     eprintln!();
                 }

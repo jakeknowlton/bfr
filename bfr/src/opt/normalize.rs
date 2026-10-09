@@ -1,5 +1,5 @@
-//! Combines adjacent effects and merges adjacent runs,
-//! using no knowledge beyond what's textually next to each other.
+//! Merges adjacent runs, and within each run composes effects on the same
+//! cell. See [`crate::ir::Block::normalize`] for the exact rules.
 //!
 //! Examples
 //!
@@ -53,14 +53,14 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_updates_leave_nothing() {
+    fn cancelling_adds_leave_nothing() {
         let (program, changed) = normalized("+-");
         assert!(changed);
         assert_eq!(print::print(&program), "");
     }
 
     #[test]
-    fn composes_past_updates_to_other_cells() {
+    fn composes_past_adds_to_other_cells() {
         let (program, _) = normalized("+>+<+");
         assert_eq!(print::print(&program), "[p] += 2\n[p+1] += 1\n");
     }

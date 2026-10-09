@@ -1,5 +1,7 @@
-//! Rewrites loops that step their control cell by a terminating constant into direct arithmetic,
-//! turning O(cell value) trips into O(1).
+//! Rewrites a loop that drains its control cell to zero by a constant each
+//! trip, adding constants to other cells as it goes, into one scaled add per
+//! target and a clear of the control cell. What took one trip per unit of
+//! the control cell becomes straight-line arithmetic.
 //!
 //! Examples
 //!
@@ -20,12 +22,12 @@ impl Pass for DrainLoop {
         let mut changed = false;
         program.for_each_block_mut(&mut |block, _| {
             changed |= block.try_replace_loops(|l, span| {
-                let LoopShape::Drain { step, targets } = l.shape() else {
+                let LoopShape::Drain { by, targets } = l.shape() else {
                     return None;
                 };
-                let trip_factor = arith::drain_factor(step, ctx.dialect)?;
+                let trip_factor = arith::drain_factor(by, ctx.dialect)?;
 
-                // One scaled add per target, then the control cell is zeroed
+                // One scaled add per target, then clear the control cell
                 let mut effects: Vec<Eff> = targets
                     .iter()
                     .map(|&(at, per_trip)| {
@@ -39,14 +41,17 @@ impl Pass for DrainLoop {
                         )
                     })
                     .collect();
-                effects.push(Eff::new(EffKind::Set { at: 0, value: 0 }, span));
+                effects.push(Eff::new(EffKind::Store { at: 0, value: 0 }, span));
                 let run = Node::new(NodeKind::Run(Run { effects, shift: 0 }), span);
 
                 Some(vec![if targets.is_empty() {
-                    // Just set the current cell to 0
+                    // No targets, so the loop is only a clear
                     run
                 } else {
-                    // This loop always runs at most once, more like an `if`
+                    // Keep a shell around the run. In the original, a zero
+                    // control cell never touched the targets, so they may be
+                    // off the tape. ConstFold lifts the run out once the
+                    // control cell is known.
                     let body = Block::from_nodes(vec![run]);
                     Node::new(NodeKind::Loop(Loop { body }), span)
                 }])
@@ -79,8 +84,8 @@ mod tests {
 
     #[test]
     fn the_bare_store_merges_with_its_neighbors() {
-        // Composition of the `+`s is Normalize's job; the merge into one
-        // run is the block edit's.
+        // Composing the `+`s is Normalize's job. Merging into one run is
+        // done by the block edit itself.
         let (program, _) = drained("+++[-]");
         assert_eq!(program.body.len(), 1);
         assert_eq!(
@@ -90,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transfer_keeps_the_run_once_shell() {
+    fn a_transfer_keeps_its_shell() {
         let (program, changed) = drained("[->+<]");
         assert!(changed);
         let expected = ["while [p] {\n", "  [p+1] += [p]\n", "  [p] = 0\n", "}\n"];
@@ -111,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn per_iteration_deltas_become_factors() {
+    fn per_trip_deltas_become_factors() {
         let (program, _) = drained("[->>+++<<]");
         let expected = [
             "while [p] {\n",
@@ -174,7 +179,7 @@ mod tests {
 
     #[test]
     fn output_matches_o0() {
-        // 3 * 4, a copy, an odd-step drain, and a zero-trip transfer.
+        // 3 * 4, a copy, a drain by an odd amount, and a zero-trip transfer.
         for src in [
             "+++[->++++<]>.",
             "++[->+>+<<]>.>.",

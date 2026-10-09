@@ -1,10 +1,13 @@
-//! Deletes loop tests that cannot matter, where the control cell must be
-//! zero: at program start, or after a node that [`Node::exits_on_zero`].
+//! Deletes loops that can never run, and loop tests that repeat a test
+//! already made.
 //!
-//! A loop whose body sets the last cell of the loop to zero always runs
-//! at most once (like an `if` statement). When that body is a single
-//! loop/scan or a single `[p] = 0` (which touches only the cell the loop
-//! test read), the outer loop "shell" can be removed.
+//! A loop can never run where its control cell must be zero: at program
+//! start, or right after a node that [`Node::exits_on_zero`].
+//!
+//! A shell's test is redundant when its body is a single loop or scan,
+//! which tests the same cell itself, or a single `[p] = 0`, which does
+//! nothing when the cell is already zero. The body is lifted out in the
+//! shell's place.
 //!
 //! Examples
 //!
@@ -35,8 +38,8 @@ impl Pass for DeadCode {
     }
 }
 
-/// A shell is a loop whose only body node makes the loop's test
-/// redundant. Lift that inner node out.
+/// Lift the body out of a shell whose only body node makes the shell's
+/// own test redundant.
 fn unwrap_shell(l: &Loop, span: Span) -> Option<Vec<Node>> {
     let [inner] = l.body.nodes() else {
         return None;
@@ -45,10 +48,11 @@ fn unwrap_shell(l: &Loop, span: Span) -> Option<Vec<Node>> {
         return None;
     }
     let self_guarded = match &inner.kind {
-        // Tests the same cell itself, so the shell's test is a repeat
+        // Tests the control cell itself, so the shell's test is a repeat
         NodeKind::Loop(_) | NodeKind::Scan(_) => true,
-        // A single `[p] = 0` touches only the test cell and has no
-        // other effects, so the shell can be safely dropped.
+        // A single `[p] = 0` touches only the control cell. When that
+        // cell is already zero the store changes nothing, and the shell's
+        // test has already accessed it, so lifting it out is safe.
         NodeKind::Run(run) => run.shift == 0 && run.effects.len() == 1,
     };
     if !self_guarded {
@@ -59,9 +63,10 @@ fn unwrap_shell(l: &Loop, span: Span) -> Option<Vec<Node>> {
     Some(vec![node])
 }
 
-/// Remove dead loops, rescanning after each removal since splicing merges
-/// neighbors. `zero_on_entry` is whether the control cell is provably zero
-/// on entry.
+/// Remove loops that can never run, restarting the search after each
+/// removal since splicing merges neighboring runs. `zero_on_entry` is
+/// whether the cell under the pointer is known to be zero when the block
+/// is entered.
 fn sweep(block: &mut Block, zero_on_entry: bool) -> bool {
     let mut changed = false;
     while let Some(i) = find_dead_loop(block, zero_on_entry) {
@@ -176,7 +181,7 @@ mod tests {
     fn a_shell_around_a_clearing_store_collapses() {
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
-            loop_node(vec![run_node(vec![EffKind::Set { at: 0, value: 0 }], 0)]),
+            loop_node(vec![run_node(vec![EffKind::Store { at: 0, value: 0 }], 0)]),
         ]);
         let dialect = Dialect::default();
         assert!(DeadCode.run(&mut program, &Ctx::new(&dialect)));
@@ -191,7 +196,7 @@ mod tests {
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
             loop_node(vec![run_node(
-                vec![add(1, 1), EffKind::Set { at: 0, value: 0 }],
+                vec![add(1, 1), EffKind::Store { at: 0, value: 0 }],
                 0,
             )]),
         ]);
@@ -202,14 +207,14 @@ mod tests {
     #[test]
     fn the_unwrapped_node_keeps_the_shell_span() {
         let (program, _) = swept("+[[-]]");
-        // `[[-]]` spans bytes 1..6; the surviving loop covers all of it.
+        // `[[-]]` spans bytes 1..6, and the surviving loop covers all of it.
         assert_eq!(program.body.nodes()[1].span, Span::new(1, 6));
     }
 
     #[test]
     fn a_loop_after_a_clearing_store_dies() {
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Set { at: 0, value: 0 }], 0),
+            run_node(vec![EffKind::Store { at: 0, value: 0 }], 0),
             loop_node(vec![run_node(vec![add(1, 1)], 0)]),
         ]);
         let dialect = Dialect::default();
@@ -220,7 +225,7 @@ mod tests {
     #[test]
     fn a_shift_off_the_cleared_cell_keeps_the_loop() {
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Set { at: 0, value: 0 }], 1),
+            run_node(vec![EffKind::Store { at: 0, value: 0 }], 1),
             loop_node(vec![run_node(vec![add(0, -1)], 0)]),
         ]);
         let dialect = Dialect::default();
@@ -231,7 +236,7 @@ mod tests {
     fn a_loop_after_a_clear_of_the_landing_cell_dies() {
         // `>[-]` then a loop: the run is `[p+1] = 0; p += 1`.
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Set { at: 1, value: 0 }], 1),
+            run_node(vec![EffKind::Store { at: 1, value: 0 }], 1),
             loop_node(vec![run_node(vec![add(0, -1)], 0)]),
         ]);
         let dialect = Dialect::default();
@@ -245,7 +250,7 @@ mod tests {
         // pointer, which the original does not when `[p]` is 0.
         let mut program = program_of(vec![
             run_node(vec![add(0, 1)], 0),
-            loop_node(vec![run_node(vec![EffKind::Set { at: 1, value: 0 }], 1)]),
+            loop_node(vec![run_node(vec![EffKind::Store { at: 1, value: 0 }], 1)]),
         ]);
         let dialect = Dialect::default();
         assert!(!DeadCode.run(&mut program, &Ctx::new(&dialect)));
@@ -266,7 +271,7 @@ mod tests {
     #[test]
     fn removal_merges_the_neighboring_runs() {
         let mut program = program_of(vec![
-            run_node(vec![EffKind::Set { at: 0, value: 0 }], 0),
+            run_node(vec![EffKind::Store { at: 0, value: 0 }], 0),
             loop_node(vec![run_node(vec![add(1, 1)], 0)]),
             run_node(vec![add(0, 1)], 0),
         ]);

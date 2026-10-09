@@ -1,8 +1,9 @@
-//! Replaces a loop whose trip count is statically known by that many copies of its body, bounded by size limits.
+//! Replaces a loop whose trip count is known at compile time with that many
+//! copies of its body, within size limits.
 //!
 //! Examples
 //!
-//! `[p] = 2; while [p] { write([p+1]); [p] -= 1 }` becomes `[p] = 2; write([p+1]); [p] -= 1; write([p+1]); [p] -= 1`
+//! `[p] = 2; while [p] { write([p+1]); [p] -= 1 }` becomes `[p] = 2; write([p+1]); [p] -= 1; write([p+1]); [p] -= 1`.
 
 use crate::ir::Program;
 use crate::opt::{Changed, Ctx, Pass};

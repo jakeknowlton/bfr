@@ -2,7 +2,6 @@
 
 pub mod const_fold;
 pub mod dead_code;
-pub mod dead_store;
 pub mod drain_loop;
 pub mod normalize;
 pub mod partial_eval;
@@ -40,7 +39,8 @@ pub trait Pass {
 /// An ordered list of passes, run to a fixed point.
 pub struct Pipeline {
     passes: Vec<Box<dyn Pass>>,
-    /// Safety valve to avoid optimizations taking too long.
+    /// Upper bound on sweeps, so a pass that never settles cannot spin
+    /// forever.
     pub max_sweeps: u32,
 }
 
@@ -69,7 +69,6 @@ impl Pipeline {
                 p.push(Box::new(drain_loop::DrainLoop));
                 p.push(Box::new(scan::ScanLoop));
                 p.push(Box::new(const_fold::ConstFold));
-                p.push(Box::new(dead_store::DeadStoreElim));
                 p.push(Box::new(dead_code::DeadCode));
             }
             OptLevel::O3 => {
@@ -79,7 +78,6 @@ impl Pipeline {
                 p.push(Box::new(const_fold::ConstFold));
                 p.push(Box::new(unroll::LoopUnroll::default()));
                 p.push(Box::new(partial_eval::PartialEval::default()));
-                p.push(Box::new(dead_store::DeadStoreElim));
                 p.push(Box::new(dead_code::DeadCode));
             }
         }
@@ -110,7 +108,8 @@ impl Pipeline {
         self.passes.is_empty()
     }
 
-    /// Repeatedly run every pass in order until a full sweep reports no change or we hit `max_sweeps`.
+    /// Run every pass in order, repeating until a full sweep reports no
+    /// change or `max_sweeps` is reached.
     pub fn run(&self, program: &mut Program, ctx: &Ctx<'_>) -> Stats {
         // TODO: Assert [`Program::validate`] in debug builds
         let mut stats = Stats {
@@ -172,9 +171,9 @@ impl Stats {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassStat {
     pub name: &'static str,
-    /// Invocations.
+    /// How many times the pass ran.
     pub runs: u32,
-    /// How many of runs reported a change.
+    /// How many times the pass reported a change.
     pub changes: u32,
 }
 
@@ -186,7 +185,7 @@ mod tests {
     use crate::ir::lower;
     use crate::parser;
 
-    /// Reports a change the first `n` runs, then declines forever.
+    /// Reports a change for the first `n` runs, then never again.
     struct Countdown(Cell<u32>);
 
     impl Countdown {
@@ -217,7 +216,8 @@ mod tests {
         pipeline.push(Box::new(Countdown::new(2)));
         let stats = pipeline.run(&mut program(), &Ctx::new(&Dialect::default()));
 
-        // Two changing sweeps, then the sweep that observes no changes.
+        // Two sweeps that change something, then the sweep that sees no
+        // change.
         assert_eq!(stats.sweeps, 3);
         assert_eq!(stats.passes.len(), 1);
         assert_eq!(stats.passes[0].runs, 3);

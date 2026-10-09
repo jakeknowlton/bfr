@@ -78,7 +78,7 @@ fn update(delta: i64) -> String {
 fn effect(kind: &EffKind) -> String {
     match kind {
         EffKind::Add { at, delta } => format!("{} {}", cell(*at), update((*delta).into())),
-        EffKind::Set { at, value } => format!("{} = {value}", cell(*at)),
+        EffKind::Store { at, value } => format!("{} = {value}", cell(*at)),
         EffKind::AddScaled { at, from, factor } => {
             let op = if *factor < 0 { "-=" } else { "+=" };
             let mut text = format!("{} {op} {}", cell(*at), cell(*from));
@@ -141,7 +141,7 @@ mod tests {
     fn every_form_prints() {
         let mut b = Builder::new();
         b.push(EffKind::Add { at: -2, delta: -4 }, Span::SYNTHETIC);
-        b.push(EffKind::Set { at: 0, value: 0 }, Span::SYNTHETIC);
+        b.push(EffKind::Store { at: 0, value: 0 }, Span::SYNTHETIC);
         b.push(
             EffKind::AddScaled {
                 at: 1,

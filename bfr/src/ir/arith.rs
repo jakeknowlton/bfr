@@ -13,8 +13,8 @@ pub fn apply_delta(value: Cell, delta: CellDelta, dialect: &Dialect) -> Cell {
     mask(i64::from(value) + i64::from(delta), dialect)
 }
 
-/// Add two changes to the same cell, making sure that it fits within
-/// a single [`CellDelta`].
+/// Add two changes to the same cell, reducing the sum only when it does
+/// not fit in a [`CellDelta`].
 ///
 /// # Examples
 ///
@@ -41,9 +41,9 @@ fn reduce_delta(value: i64, dialect: &Dialect) -> CellDelta {
     r as CellDelta
 }
 
-/// The value that multiplies `value` back to 1 in a cell of the dialect's
-/// width. Dividing by `value` is the same as multiplying by this.
-/// Only odd values have an inverse here, so even values get `None`.
+/// The value that, multiplied by `value`, gives 1 in a cell of the
+/// dialect's width. Dividing by `value` is the same as multiplying by
+/// this. Only odd values have an inverse, so even values get `None`.
 ///
 /// # Examples
 ///
@@ -63,8 +63,8 @@ pub fn modular_inverse(value: u32, dialect: &Dialect) -> Option<u32> {
     // as `e = 1 - v*x` is the gap between what we have and the 1 we want,
     // so `e == 0` means that `x` is the inverse. Two numbers differing by a
     // multiple of 2^k share their lower k bits, so an `e` divisible by 2^k
-    // means the lower k bits of `v*x` already read as 1. Here's a light
-    // proof of this method for this specific case:
+    // means the lower k bits of `v*x` already read as 1. A short proof for
+    // this case:
     //
     //   1. `x = v` starts `e` at a multiple of 8. This is because
     //      `v*v ≡ 1 (mod 8)` for any odd v (try it!).
@@ -81,31 +81,30 @@ pub fn modular_inverse(value: u32, dialect: &Dialect) -> Option<u32> {
     for _ in 0..4 {
         x = x.wrapping_mul(2u32.wrapping_sub(value.wrapping_mul(x)));
     }
-    // An inverse mod 2^32 stays one mod any narrower width, so a small
-    // cell just truncates.
+    // An inverse mod 2^32 is also an inverse mod any narrower width, so a
+    // narrower cell just truncates.
     Some(mask(i64::from(x), dialect))
 }
 
 /// The multiplier from the control cell's starting value to the number
 /// of trips a loop takes. From a control cell of `start`, the loop runs
-/// `factor * start` times, wrapping at the cell width. `step` is what
-/// one trip adds to the control cell.
+/// `factor * start` times, wrapping at the cell width. `by` is what one
+/// trip adds to the control cell.
 ///
-/// An even step gets `None`, because an even step can cause the control
-/// cell to step right over zero and loop indefinitely, so such loops must
-/// stay loops.
+/// An even `by` gets `None`: it can jump over zero and loop forever, so
+/// such loops must stay loops.
 ///
 /// # Examples
 ///
-/// `[-]` steps by `-1` and runs `start` times, so its factor is `1`.
-/// On u8 cells, `[---]` steps by `-3`, so its factor is `171`. In this
+/// `[-]` drains by `-1` and runs `start` times, so its factor is `1`.
+/// On u8 cells, `[---]` drains by `-3`, so its factor is `171`. In this
 /// case, a control cell of `1` takes `171` trips to reach zero.
-pub fn drain_factor(step: CellDelta, dialect: &Dialect) -> Option<Cell> {
-    modular_inverse(mask(-i64::from(step), dialect), dialect)
+pub fn drain_factor(by: CellDelta, dialect: &Dialect) -> Option<Cell> {
+    modular_inverse(mask(-i64::from(by), dialect), dialect)
 }
 
-/// The multiplier from the control cell's starting value to everything
-/// one target cell gains over the whole loop. From a control cell of
+/// The multiplier from the control cell's starting value to the total one
+/// target cell gains over the whole loop. From a control cell of
 /// `start`, the target gains `factor * start`. `per_trip` is what one
 /// trip adds to the target, and `trip_factor` is the factor from
 /// [`drain_factor`].
@@ -114,11 +113,22 @@ pub fn drain_factor(step: CellDelta, dialect: &Dialect) -> Option<Cell> {
 ///
 /// `[->+++<]` adds `3` to its target on the right each trip and runs
 /// `start` trips, so the target gains `3 * start` and `3` is returned.
-/// On u8 cells, `[--->++<]` adds `2` per trip, and its step of `-3` runs
+/// On u8 cells, `[--->++<]` adds `2` per trip, and draining by `-3` runs
 /// the loop `171 * start` trips, so the target gains `2 * 171 * start`
 /// and `342` (or `2 * 171`) is returned for any `start`.
 pub fn target_factor(per_trip: CellDelta, trip_factor: Cell, dialect: &Dialect) -> CellDelta {
     let product = i64::from(per_trip) * i64::from(trip_factor);
+    CellDelta::try_from(product).unwrap_or_else(|_| reduce_delta(product, dialect))
+}
+
+/// The change a scaled add makes when its source cell holds `from`.
+///
+/// # Examples
+///
+/// `[p+1] += [p] * 4` with `[p]` holding `3` adds `12`. On u8 cells,
+/// `[p+1] += [p] * 171` with `[p]` holding `3` adds `513`, which is `1`.
+pub fn scaled_delta(from: Cell, factor: CellDelta, dialect: &Dialect) -> CellDelta {
+    let product = i64::from(from) * i64::from(factor);
     CellDelta::try_from(product).unwrap_or_else(|_| reduce_delta(product, dialect))
 }
 
@@ -206,9 +216,25 @@ mod tests {
     }
 
     #[test]
+    fn scaled_delta_keeps_the_exact_product_when_it_fits() {
+        let d = dialect(CellWidth::U8);
+        assert_eq!(scaled_delta(3, 4, &d), 12);
+        assert_eq!(scaled_delta(3, -1, &d), -3);
+        // 3 * 171 = 513 stays exact. The cell wraps it to 1 when applied.
+        assert_eq!(scaled_delta(3, 171, &d), 513);
+        assert_eq!(apply_delta(0, scaled_delta(3, 171, &d), &d), 1);
+    }
+
+    #[test]
+    fn scaled_delta_reduces_an_overflowing_product() {
+        let d = dialect(CellWidth::U32);
+        assert_eq!(scaled_delta(u32::MAX, 2, &d), -2);
+    }
+
+    #[test]
     fn scale_reduces_an_overflowing_product() {
         let d = dialect(CellWidth::U32);
-        // 3^-1 mod 2^32 is 2863311531; times 2 wraps into i32 range.
+        // 3^-1 mod 2^32 is 2863311531, and times 2 wraps into i32 range.
         let trip_factor = modular_inverse(3, &d).expect("odd");
         let product = i64::from(trip_factor) * 2;
         let expected = (product - (1i64 << 32)) as i32;

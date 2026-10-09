@@ -9,9 +9,9 @@ use crate::ir::{EffKind, Program};
 pub fn lower(ast: &Ast) -> Program {
     let mut builder = Builder::new();
 
-    // It's unlikely that we encounter a Brainfuck program
-    // that overflows Rust's callstack, but if that becomes an
-    // issue we can rewrite this to lower iteratively.
+    // This recurses once per nesting level. A brainfuck program deep
+    // enough to overflow the stack is unlikely, but if that becomes an
+    // issue this can be rewritten to lower iteratively.
     lower_nodes(&mut builder, &ast.body);
 
     builder.finish()

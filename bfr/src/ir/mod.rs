@@ -3,13 +3,26 @@
 //! A [`Block`] is a canonical sequence of run / loop / scan nodes. Within a
 //! [`Run`], effect offsets are relative to the pointer *at run entry* and the
 //! pointer moves exactly once, at the end.
+//!
+//! Vocabulary used throughout the crate:
+//!
+//! - A run's *shift* is the single pointer move at its end.
+//! - A loop's *control cell* is the cell under the pointer at each test.
+//! - A *trip* is one pass through a loop body.
+//! - A *shell* is a loop whose body zeroes the control cell, so it runs at
+//!   most once and acts like an `if`.
+//! - A *clear* is a store of zero, `[p] = 0`.
+//! - A block is *canonical* when no two runs are adjacent and no run does
+//!   nothing.
+//! - A function *declines* when it returns `None` because its input does
+//!   not fit the pattern it handles.
 
 pub mod arith;
 pub mod build;
 pub mod lower;
 pub mod print;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::Dialect;
 use crate::error::Span;
@@ -17,10 +30,11 @@ use crate::error::Span;
 /// A cell value, masked to the configured width by whatever produces it.
 pub type Cell = u32;
 
-/// A signed change to a cell value
+/// A signed change to a cell value.
 pub type CellDelta = i32;
 
-/// Stable identity for a node, for side tables.
+/// Identifies a node so side tables can refer to it. Stable until the tree
+/// changes, see [`Program::renumber`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u32);
 
@@ -63,7 +77,7 @@ impl Program {
         }
     }
 
-    /// Total effects plus control nodes.
+    /// Every effect in the program, plus one for each loop and scan.
     pub fn op_count(&self) -> usize {
         let mut count = 0;
         let mut stack = vec![self.body.nodes()];
@@ -126,8 +140,8 @@ impl Block {
         self.nodes.is_empty()
     }
 
-    /// Mutable access to node payloads.
-    /// Cannot change the node sequence, so canonical adjacency is preserved.
+    /// Mutable access to each node in place. The sequence itself cannot
+    /// change, so the block stays canonical.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Node> {
         self.nodes.iter_mut()
     }
@@ -138,8 +152,8 @@ impl Block {
         self.canonicalize();
     }
 
-    /// Offer every loop in this block (not nested ones) to `f`; where it
-    /// returns a replacement, splice it in.
+    /// Call `f` on each loop directly in this block, not in nested blocks.
+    /// Where it returns a replacement, splice that in.
     pub fn try_replace_loops(
         &mut self,
         mut f: impl FnMut(&Loop, Span) -> Option<Vec<Node>>,
@@ -211,9 +225,9 @@ impl Block {
         changed
     }
 
-    /// Restore canonical and locally reduced form by merging adjacent runs,
-    /// composing same-cell effect pairs, dropping `+= 0` adds and empty runs.
-    /// Returns whether anything changed.
+    /// Restore canonical form and fold within each run: merge adjacent
+    /// runs, compose effects on the same cell, and drop effects and runs
+    /// that do nothing. Returns whether anything changed.
     pub fn normalize(&mut self, dialect: &Dialect) -> bool {
         let mut changed = self.canonicalize();
 
@@ -223,7 +237,7 @@ impl Block {
             }
         }
 
-        // Canonicalize again in case there are empty runs now
+        // Folding may have emptied a run, so canonicalize again
         changed | self.canonicalize()
     }
 
@@ -237,9 +251,40 @@ impl Block {
         f(self, site);
     }
 
-    /// Net pointer movement, or `None` when not statically known.
+    /// Net pointer movement, or `None` when not known at compile time.
     pub fn net_shift(&self) -> Option<isize> {
-        todo!("Block::net_shift")
+        self.nodes
+            .iter()
+            .try_fold(0, |sum, node| Some(sum + node.net_shift()?))
+    }
+
+    /// Add every cell this block touches, starting from `cursor`, to
+    /// `footprint`. Returns the cursor at exit, or `None` when the exit
+    /// cursor is not known at compile time.
+    fn footprint_from(&self, mut cursor: isize, footprint: &mut Footprint) -> Option<isize> {
+        for node in &self.nodes {
+            match &node.kind {
+                NodeKind::Run(run) => {
+                    for eff in &run.effects {
+                        eff.kind.reads(|at| {
+                            footprint.reads.insert(cursor + at);
+                        });
+                        if let Some(at) = eff.kind.writes() {
+                            footprint.writes.insert(cursor + at);
+                        }
+                    }
+                    cursor += run.shift;
+                }
+                NodeKind::Loop(l) => {
+                    footprint.reads.insert(cursor);
+                    if l.body.footprint_from(cursor, footprint)? != cursor {
+                        return None;
+                    }
+                }
+                NodeKind::Scan(_) => return None,
+            }
+        }
+        Some(cursor)
     }
 }
 
@@ -248,21 +293,21 @@ impl Block {
 /// Returns whether anything changed.
 fn normalize_effects(effects: &mut Vec<Eff>, dialect: &Dialect) -> bool {
     struct LastWrite {
-        /// Index in `out` vec.
+        /// Index into `out`.
         at: usize,
         /// Whether anything has read the cell since.
         observed: bool,
     }
 
-    /// Index in `out` of the write `kind` can fold into, if any.
+    /// The index in `out` of the write that `kind` can fold into, if any.
     fn fold_target(kind: &EffKind, state: &HashMap<isize, LastWrite>) -> Option<usize> {
         let prev = state.get(&kind.writes()?)?;
         if prev.observed {
             return None;
         }
-        // Folding moves this effect, and its read of `from`, back to
-        // `prev.at`, so decline when a write to `from` sits in between
-        // and the read would no longer see it.
+        // Folding moves this effect, including its read of `from`, back to
+        // `prev.at`. Decline if a write to `from` sits in between, since
+        // the moved read would no longer see that write.
         if let EffKind::AddScaled { from, .. } = kind
             && state.get(from).is_some_and(|w| w.at > prev.at)
         {
@@ -276,7 +321,8 @@ fn normalize_effects(effects: &mut Vec<Eff>, dialect: &Dialect) -> bool {
     let mut state: HashMap<isize, LastWrite> = HashMap::new();
 
     for eff in core::mem::take(effects) {
-        // Fold all contiguous foldable effects
+        // Fold into the last write to the same cell when nothing in
+        // between has read that cell
         if let Some(i) = fold_target(&eff.kind, &state)
             && let Some(kind) = out[i].kind.compose(&eff.kind, dialect)
         {
@@ -284,7 +330,7 @@ fn normalize_effects(effects: &mut Vec<Eff>, dialect: &Dialect) -> bool {
             continue;
         }
 
-        // This effect is not foldable, so make sure its reads are observed
+        // This effect stays, so mark every cell it reads as observed
         eff.kind.reads(|cell| {
             if let Some(prev) = state.get_mut(&cell) {
                 prev.observed = true;
@@ -304,7 +350,8 @@ fn normalize_effects(effects: &mut Vec<Eff>, dialect: &Dialect) -> bool {
 
     out.retain(|eff| !eff.kind.is_nop());
 
-    // Every fold and every drop shortens `out`, and nothing else mutates it.
+    // Only folds and drops change `out`, and both shorten it, so a length
+    // change is the same as any change.
     *effects = out;
     effects.len() != before
 }
@@ -327,13 +374,17 @@ impl Node {
         }
     }
 
-    /// Net pointer movement, or `None` if not statically known.
+    /// Net pointer movement, or `None` when not known at compile time.
     pub fn net_shift(&self) -> Option<isize> {
-        todo!("Node::net_shift")
+        match &self.kind {
+            NodeKind::Run(run) => Some(run.shift),
+            NodeKind::Loop(l) => (l.body.net_shift()? == 0).then_some(0),
+            NodeKind::Scan(_) => None,
+        }
     }
 
-    /// Whether the cell under the exit pointer is provably zero once this
-    /// node has run.
+    /// Whether the cell under the pointer is known to be zero after this
+    /// node runs.
     pub fn exits_on_zero(&self) -> bool {
         match &self.kind {
             NodeKind::Loop(_) | NodeKind::Scan(_) => true,
@@ -343,7 +394,7 @@ impl Node {
                     .iter()
                     .rev()
                     .find(|eff| eff.kind.writes() == Some(exit))
-                    .is_some_and(|eff| eff.kind == EffKind::Set { at: exit, value: 0 })
+                    .is_some_and(|eff| eff.kind == EffKind::Store { at: exit, value: 0 })
             }
         }
     }
@@ -373,8 +424,8 @@ impl NodeKind {
     }
 }
 
-/// A straight-line run. Effects addressed relative to the pointer at run
-/// entry, then one net shift.
+/// A straight-line run: effects addressed relative to the pointer at run
+/// entry, followed by one net shift.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub effects: Vec<Eff>,
@@ -390,8 +441,8 @@ impl Run {
         }
     }
 
-    /// Sequence `next` onto the end of this run. Its effects are rebased
-    /// onto this run's entry, since they were addressed from after the shift.
+    /// Append `next` to this run. Its effects were addressed from after
+    /// this run's shift, so they are rebased to this run's entry.
     pub fn absorb(&mut self, next: Run) {
         self.effects.extend(
             next.effects
@@ -401,9 +452,9 @@ impl Run {
         self.shift += next.shift;
     }
 
-    /// No reads, no writes.
-    pub fn is_pure(&self) -> bool {
-        self.effects.iter().all(|e| !e.kind.is_observable())
+    /// Whether the run contains an input or output effect.
+    pub fn has_io(&self) -> bool {
+        self.effects.iter().any(|e| e.kind.is_io())
     }
 
     /// Neither touches a cell nor moves the pointer, so it can be dropped.
@@ -435,16 +486,19 @@ impl Loop {
             return LoopShape::Other;
         }
 
-        // Exact sums per cell; a sum too big for CellDelta declines rather
-        // than reduce, since shape has no dialect to reduce against.
-        let mut step: i64 = 0;
+        // Sum each cell's deltas exactly. A sum too big for a CellDelta
+        // makes the shape `Other`, since there is no dialect here to
+        // reduce it against. That only happens in a pipeline without
+        // Normalize, which would have fused the adds already, and even
+        // then only for a body of billions of commands.
+        let mut by: i64 = 0;
         let mut sums: Vec<(isize, i64)> = Vec::new();
         for eff in &run.effects {
             let EffKind::Add { at, delta } = eff.kind else {
                 return LoopShape::Other;
             };
             if at == 0 {
-                step += i64::from(delta);
+                by += i64::from(delta);
             } else {
                 match sums.iter_mut().find(|(offset, _)| *offset == at) {
                     Some((_, sum)) => *sum += i64::from(delta),
@@ -453,11 +507,12 @@ impl Loop {
             }
         }
 
-        // Only an odd step is a guaranteed to reach zero
-        if step % 2 == 0 {
+        // Only an odd change is guaranteed to reach zero, see
+        // `arith::drain_factor`
+        if by % 2 == 0 {
             return LoopShape::Other;
         }
-        let Ok(step) = CellDelta::try_from(step) else {
+        let Ok(by) = CellDelta::try_from(by) else {
             return LoopShape::Other;
         };
         let mut targets = Vec::with_capacity(sums.len());
@@ -467,23 +522,39 @@ impl Loop {
             };
             targets.push((at, delta));
         }
-        LoopShape::Drain { step, targets }
+        LoopShape::Drain { by, targets }
+    }
+
+    /// Every cell the loop can touch, relative to its entry, including its
+    /// own test. `None` unless each trip is known to leave the pointer where
+    /// it started.
+    pub fn footprint(&self) -> Option<Footprint> {
+        let mut footprint = Footprint::default();
+        footprint.reads.insert(0);
+        (self.body.footprint_from(0, &mut footprint)? == 0).then_some(footprint)
     }
 }
 
-/// What a loop's body means.
+/// The cells a loop can touch, relative to its entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Footprint {
+    pub reads: HashSet<isize>,
+    pub writes: HashSet<isize>,
+}
+
+/// What a loop's body does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopShape {
-    /// The control cell steps by `step` toward zero; every other touched
-    /// cell accumulates a constant per trip.
+    /// Each trip changes the control cell by `by` and adds a constant to
+    /// every other touched cell.
     Drain {
-        step: CellDelta,
+        by: CellDelta,
         /// `(offset, per-trip delta)` for the cells receiving the
         /// drained value. Empty for `[-]`; one entry for `[->+<]`; two or
         /// more for copy/fan-out loops like `[->+>+<<]`.
         targets: Vec<(isize, CellDelta)>,
     },
-    /// Single-run body with no effects and nonzero shift: `[>]`, `[<<]`.
+    /// A body that only moves the pointer: `[>]`, `[<<]`.
     Scan { stride: isize },
     /// Anything else.
     Other,
@@ -492,11 +563,11 @@ pub enum LoopShape {
 /// Advance the pointer by `stride` until `tape[ptr] == 0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scan {
-    /// Should never be 0, by convention.
+    /// Never 0. [`build::Builder::scan`] rejects a zero stride.
     pub stride: isize,
 }
 
-/// One step of a run.
+/// One effect in a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Eff {
     /// Merged span of every source character that contributed.
@@ -512,11 +583,13 @@ impl Eff {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffKind {
-    /// `tape[ptr + at] += delta`. `delta` is the true integer sum of fused deltas.
+    /// `tape[ptr + at] += delta`. `delta` is the exact sum of the fused `+`
+    /// and `-` commands, reduced only when it would overflow (see
+    /// [`arith::fuse_deltas`]).
     Add { at: isize, delta: CellDelta },
 
     /// `tape[ptr + at] = value`, masked.
-    Set { at: isize, value: Cell },
+    Store { at: isize, value: Cell },
 
     /// `tape[ptr + at] += tape[ptr + from] * factor`.
     AddScaled {
@@ -538,18 +611,20 @@ impl EffKind {
     pub fn writes(&self) -> Option<isize> {
         match self {
             EffKind::Add { at, .. }
-            | EffKind::Set { at, .. }
+            | EffKind::Store { at, .. }
             | EffKind::AddScaled { at, .. }
             | EffKind::Read { at } => Some(*at),
             EffKind::Write { .. } => None,
         }
     }
 
-    /// Every offset this effect reads. `Read` is conservatively a reader.
+    /// Every offset this effect reads. `Read` also counts as reading its
+    /// cell, since under [`crate::config::EofBehavior::Unchanged`] it can
+    /// leave the old value in place.
     pub fn reads(&self, mut sink: impl FnMut(isize)) {
         match self {
             EffKind::Add { at, .. } => sink(*at),
-            EffKind::Set { .. } => {}
+            EffKind::Store { .. } => {}
             EffKind::AddScaled { at, from, .. } => {
                 sink(*at);
                 sink(*from);
@@ -559,8 +634,8 @@ impl EffKind {
         }
     }
 
-    /// Observable outside the tape (I/O).
-    pub fn is_observable(&self) -> bool {
+    /// Visible outside the tape (I/O).
+    pub fn is_io(&self) -> bool {
         matches!(self, EffKind::Read { .. } | EffKind::Write { .. })
     }
 
@@ -572,11 +647,11 @@ impl EffKind {
         )
     }
 
-    /// Compose two same-destination effects with no intervening effects for
-    /// that cell. Declines (`None`) when the destinations differ or the
-    /// combination has no single-effect equivalent in the IR.
+    /// Combine this effect with `later`, assuming both write the same cell
+    /// and nothing in between touches it. Returns `None` when the
+    /// destinations differ or the IR has no single effect for the result.
     pub fn compose(&self, later: &EffKind, dialect: &Dialect) -> Option<EffKind> {
-        // Both effects must write to the same cell to be composeable
+        // Both effects must write the same cell
         if self.writes()? != later.writes()? {
             return None;
         }
@@ -585,14 +660,14 @@ impl EffKind {
                 at: *at,
                 delta: arith::fuse_deltas(*a, *b, dialect),
             }),
-            (EffKind::Set { at, value }, EffKind::Add { delta, .. }) => Some(EffKind::Set {
+            (EffKind::Store { at, value }, EffKind::Add { delta, .. }) => Some(EffKind::Store {
                 at: *at,
                 value: arith::apply_delta(*value, *delta, dialect),
             }),
             (
-                EffKind::Add { .. } | EffKind::Set { .. } | EffKind::AddScaled { .. },
-                EffKind::Set { at, value },
-            ) => Some(EffKind::Set {
+                EffKind::Add { .. } | EffKind::Store { .. } | EffKind::AddScaled { .. },
+                EffKind::Store { at, value },
+            ) => Some(EffKind::Store {
                 at: *at,
                 value: *value,
             }),
@@ -630,8 +705,8 @@ mod tests {
         EffKind::Add { at, delta }
     }
 
-    fn set(at: isize, value: Cell) -> EffKind {
-        EffKind::Set { at, value }
+    fn store(at: isize, value: Cell) -> EffKind {
+        EffKind::Store { at, value }
     }
 
     fn scaled(at: isize, from: isize, factor: CellDelta) -> EffKind {
@@ -669,20 +744,20 @@ mod tests {
         #[test]
         fn add_folds_into_set_at_the_width() {
             let d = u8_dialect();
-            assert_eq!(set(0, 255).compose(&add(0, 1), &d), Some(set(0, 0)));
+            assert_eq!(store(0, 255).compose(&add(0, 1), &d), Some(store(0, 0)));
             let d = Dialect {
                 cell_width: CellWidth::U16,
                 ..Dialect::default()
             };
-            assert_eq!(set(0, 255).compose(&add(0, 1), &d), Some(set(0, 256)));
+            assert_eq!(store(0, 255).compose(&add(0, 1), &d), Some(store(0, 256)));
         }
 
         #[test]
-        fn a_later_set_supersedes_updates() {
+        fn a_later_store_wins() {
             let d = u8_dialect();
-            assert_eq!(add(0, 5).compose(&set(0, 7), &d), Some(set(0, 7)));
-            assert_eq!(set(0, 1).compose(&set(0, 2), &d), Some(set(0, 2)));
-            assert_eq!(scaled(0, 1, 2).compose(&set(0, 9), &d), Some(set(0, 9)));
+            assert_eq!(add(0, 5).compose(&store(0, 7), &d), Some(store(0, 7)));
+            assert_eq!(store(0, 1).compose(&store(0, 2), &d), Some(store(0, 2)));
+            assert_eq!(scaled(0, 1, 2).compose(&store(0, 9), &d), Some(store(0, 9)));
         }
 
         #[test]
@@ -705,7 +780,7 @@ mod tests {
             let d = u8_dialect();
             assert_eq!(add(0, 1).compose(&scaled(0, 1, 2), &d), None);
             assert_eq!(scaled(0, 1, 2).compose(&add(0, 1), &d), None);
-            assert_eq!(set(0, 1).compose(&scaled(0, 1, 2), &d), None);
+            assert_eq!(store(0, 1).compose(&scaled(0, 1, 2), &d), None);
         }
 
         #[test]
@@ -718,7 +793,7 @@ mod tests {
         #[test]
         fn declines_io() {
             let d = u8_dialect();
-            assert_eq!(EffKind::Read { at: 0 }.compose(&set(0, 1), &d), None);
+            assert_eq!(EffKind::Read { at: 0 }.compose(&store(0, 1), &d), None);
             assert_eq!(add(0, 1).compose(&EffKind::Read { at: 0 }, &d), None);
             assert_eq!(
                 EffKind::Write { at: 0 }.compose(&EffKind::Write { at: 0 }, &d),
@@ -746,6 +821,99 @@ mod tests {
             assert_eq!(a.effects[1].kind, scaled(3, 2, 2));
             assert_eq!(a.effects[1].span, Span::new(3, 4));
             assert_eq!(a.shift, 1);
+        }
+    }
+
+    fn loop_node(body: Vec<Node>) -> Node {
+        let body = Block::from_nodes(body);
+        Node::new(NodeKind::Loop(Loop { body }), Span::SYNTHETIC)
+    }
+
+    fn scan_node(stride: isize) -> Node {
+        Node::new(NodeKind::Scan(Scan { stride }), Span::SYNTHETIC)
+    }
+
+    mod net_shift {
+        use super::*;
+
+        #[test]
+        fn sums_the_runs_in_a_block() {
+            let block = Block::from_nodes(vec![
+                run_node(vec![add(0, 1)], 2),
+                loop_node(vec![run_node(vec![add(0, -1)], 0)]),
+                run_node(vec![], -1),
+            ]);
+            assert_eq!(block.net_shift(), Some(1));
+        }
+
+        #[test]
+        fn a_loop_is_zero_only_when_its_body_is() {
+            assert_eq!(
+                loop_node(vec![run_node(vec![add(0, -1)], 0)]).net_shift(),
+                Some(0)
+            );
+            let balanced = loop_node(vec![
+                run_node(vec![add(0, 1)], 1),
+                loop_node(vec![run_node(vec![add(0, -1)], 0)]),
+                run_node(vec![], -1),
+            ]);
+            assert_eq!(balanced.net_shift(), Some(0));
+            assert_eq!(loop_node(vec![run_node(vec![], 1)]).net_shift(), None);
+        }
+
+        #[test]
+        fn a_scan_is_unknown() {
+            assert_eq!(scan_node(1).net_shift(), None);
+            assert_eq!(
+                Block::from_nodes(vec![run_node(vec![], 1), scan_node(1)]).net_shift(),
+                None
+            );
+        }
+    }
+
+    mod footprint {
+        use super::*;
+
+        fn footprint_of(node: &Node) -> Option<Footprint> {
+            match &node.kind {
+                NodeKind::Loop(l) => l.footprint(),
+                other => panic!("expected a loop, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn collects_reads_and_writes_across_shifts() {
+            // `[p+1] += [p]; p += 1`, then `while [p] { [p] -= 1 }`, then
+            // `write([p+2]); p -= 1`, all relative to the loop's entry.
+            let l = loop_node(vec![
+                run_node(vec![scaled(1, 0, 1)], 1),
+                loop_node(vec![run_node(vec![add(0, -1)], 0)]),
+                run_node(vec![EffKind::Write { at: 2 }], -1),
+            ]);
+            let footprint = footprint_of(&l).expect("balanced");
+            assert_eq!(footprint.reads, HashSet::from([0, 1, 3]));
+            assert_eq!(footprint.writes, HashSet::from([1]));
+        }
+
+        #[test]
+        fn an_empty_body_reads_only_its_test() {
+            let footprint = footprint_of(&loop_node(vec![])).expect("balanced");
+            assert_eq!(footprint.reads, HashSet::from([0]));
+            assert!(footprint.writes.is_empty());
+        }
+
+        #[test]
+        fn declines_a_body_that_moves_the_pointer() {
+            assert_eq!(
+                footprint_of(&loop_node(vec![run_node(vec![add(0, 1)], 1)])),
+                None
+            );
+            assert_eq!(footprint_of(&loop_node(vec![scan_node(1)])), None);
+            let nested = loop_node(vec![
+                run_node(vec![add(0, 1)], 0),
+                loop_node(vec![run_node(vec![], 1)]),
+            ]);
+            assert_eq!(footprint_of(&nested), None);
         }
     }
 
@@ -887,32 +1055,32 @@ mod tests {
 
         #[test]
         fn a_run_whose_last_write_to_the_cell_is_a_clear_does() {
-            assert!(run_node(vec![set(0, 0)], 0).exits_on_zero());
-            assert!(run_node(vec![set(0, 0), add(1, 1)], 0).exits_on_zero());
-            assert!(run_node(vec![set(0, 0), EffKind::Write { at: 0 }], 0).exits_on_zero());
+            assert!(run_node(vec![store(0, 0)], 0).exits_on_zero());
+            assert!(run_node(vec![store(0, 0), add(1, 1)], 0).exits_on_zero());
+            assert!(run_node(vec![store(0, 0), EffKind::Write { at: 0 }], 0).exits_on_zero());
         }
 
         #[test]
         fn a_later_write_to_the_cell_hides_the_clear() {
-            assert!(!run_node(vec![set(0, 0), add(0, 1)], 0).exits_on_zero());
+            assert!(!run_node(vec![store(0, 0), add(0, 1)], 0).exits_on_zero());
             assert!(
-                !run_node(vec![set(0, 0), EffKind::Write { at: 0 }, add(0, 3)], 0).exits_on_zero()
+                !run_node(vec![store(0, 0), EffKind::Write { at: 0 }, add(0, 3)], 0).exits_on_zero()
             );
-            assert!(!run_node(vec![set(0, 0), EffKind::Read { at: 0 }], 0).exits_on_zero());
+            assert!(!run_node(vec![store(0, 0), EffKind::Read { at: 0 }], 0).exits_on_zero());
         }
 
         #[test]
         fn the_exit_cell_is_the_one_under_the_shifted_pointer() {
             // `>[-]` canonicalizes to `[p+1] = 0; p += 1`.
-            assert!(run_node(vec![set(1, 0)], 1).exits_on_zero());
-            assert!(run_node(vec![set(0, 5), set(-2, 0)], -2).exits_on_zero());
-            assert!(!run_node(vec![set(0, 0)], 1).exits_on_zero());
-            assert!(!run_node(vec![set(1, 0), add(1, 1)], 1).exits_on_zero());
+            assert!(run_node(vec![store(1, 0)], 1).exits_on_zero());
+            assert!(run_node(vec![store(0, 5), store(-2, 0)], -2).exits_on_zero());
+            assert!(!run_node(vec![store(0, 0)], 1).exits_on_zero());
+            assert!(!run_node(vec![store(1, 0), add(1, 1)], 1).exits_on_zero());
         }
 
         #[test]
         fn other_stores_do_not() {
-            assert!(!run_node(vec![set(0, 1)], 0).exits_on_zero());
+            assert!(!run_node(vec![store(0, 1)], 0).exits_on_zero());
             assert!(!run_node(vec![add(0, -1)], 0).exits_on_zero());
             assert!(!run_node(vec![], 0).exits_on_zero());
         }

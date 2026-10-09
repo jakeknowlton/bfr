@@ -89,12 +89,13 @@ pub struct Config {
     pub dialect: Dialect,
     /// The passes to run, in order.
     pub pipeline: Pipeline,
-    /// Fault with [`crate::error::FaultCode::OutOfFuel`] after this many IR steps.
+    /// Fault with [`crate::error::FaultCode::OutOfFuel`] once this many
+    /// interpreter steps have run.
     pub fuel: Option<u64>,
 }
 
 impl Config {
-    /// Default dialect, default limits, pipeline built from `level`.
+    /// The default dialect and limits, with the preset pipeline for `level`.
     pub fn new(level: OptLevel) -> Self {
         Config {
             dialect: Dialect::default(),
